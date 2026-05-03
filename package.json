@@ -1,0 +1,13 @@
+{
+  "name": "antigravity",
+  "version": "1.0.0",
+  "description": "Lightweight 2D KSP-inspired browser game",
+  "scripts": {
+    "build": "esbuild src/main.ts --bundle --outfile=dist/bundle.js --sourcemap",
+    "dev": "esbuild src/main.ts --bundle --outfile=dist/bundle.js --sourcemap --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.0",
+    "typescript": "^5.4.0"
+  }
+}

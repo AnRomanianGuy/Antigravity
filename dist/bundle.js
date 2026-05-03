@@ -1,0 +1,2777 @@
+"use strict";
+(() => {
+  // src/types.ts
+  var vec2 = {
+    zero: () => ({ x: 0, y: 0 }),
+    clone: (v) => ({ x: v.x, y: v.y }),
+    add: (a, b) => ({ x: a.x + b.x, y: a.y + b.y }),
+    sub: (a, b) => ({ x: a.x - b.x, y: a.y - b.y }),
+    scale: (v, s) => ({ x: v.x * s, y: v.y * s }),
+    length: (v) => Math.sqrt(v.x * v.x + v.y * v.y),
+    normalize: (v) => {
+      const l = vec2.length(v);
+      return l > 0 ? { x: v.x / l, y: v.y / l } : { x: 0, y: 0 };
+    },
+    dot: (a, b) => a.x * b.x + a.y * b.y,
+    /** Rotate vector by angle radians */
+    rotate: (v, angle) => ({
+      x: v.x * Math.cos(angle) - v.y * Math.sin(angle),
+      y: v.x * Math.sin(angle) + v.y * Math.cos(angle)
+    })
+  };
+  var THEME = {
+    bg: "#0a0a12",
+    panelBg: "#0d1117",
+    panelBorder: "#1e3a5f",
+    accent: "#00d4ff",
+    accentDim: "#0088aa",
+    accentGlow: "rgba(0,212,255,0.25)",
+    text: "#c8d8e8",
+    textDim: "#4a6080",
+    danger: "#ff4444",
+    warning: "#ffaa00",
+    success: "#44ff88",
+    engineFire: "#ff6a00",
+    heatGlow: "#ff4500",
+    plasmaCore: "#00ffff",
+    plasmaEdge: "#8800ff",
+    exhaustCore: "#ffffff",
+    exhaustMid: "#ffaa44",
+    exhaustEdge: "rgba(255,80,0,0)"
+  };
+
+  // src/Part.ts
+  var PART_CATALOGUE = {
+    [0 /* COMMAND_POD */]: {
+      type: 0 /* COMMAND_POD */,
+      name: "Mk1 Command Pod",
+      dryMass: 840,
+      maxFuelMass: 0,
+      maxThrust: 0,
+      isp: 0,
+      dragCoeff: 0.2,
+      crossSection: 1.54,
+      // ≈ π*(0.7m)²  — 1.4m diameter capsule
+      renderW: 44,
+      renderH: 52,
+      color: "#4a7fa5",
+      description: "Crewed command module with SAS reaction wheel."
+    },
+    [1 /* FUEL_TANK_S */]: {
+      type: 1 /* FUEL_TANK_S */,
+      name: "FL-T400 Fuel Tank",
+      dryMass: 500,
+      maxFuelMass: 4500,
+      maxThrust: 0,
+      isp: 0,
+      dragCoeff: 0.15,
+      crossSection: 1.54,
+      renderW: 44,
+      renderH: 80,
+      color: "#7a8a9a",
+      description: "Standard short fuel tank (4.5t propellant)."
+    },
+    [2 /* FUEL_TANK_L */]: {
+      type: 2 /* FUEL_TANK_L */,
+      name: "FL-T800 Fuel Tank",
+      dryMass: 1e3,
+      maxFuelMass: 9e3,
+      maxThrust: 0,
+      isp: 0,
+      dragCoeff: 0.15,
+      crossSection: 1.54,
+      renderW: 44,
+      renderH: 140,
+      color: "#6a7a8a",
+      description: "Large fuel tank (9t propellant)."
+    },
+    [3 /* ENGINE */]: {
+      type: 3 /* ENGINE */,
+      name: 'LV-T30 "Reliant" Engine',
+      dryMass: 1250,
+      maxFuelMass: 0,
+      maxThrust: 215e3,
+      // 215 kN
+      isp: 310,
+      // vacuum Isp in seconds
+      dragCoeff: 0.5,
+      crossSection: 1.54,
+      renderW: 44,
+      renderH: 62,
+      color: "#8a5a3a",
+      description: "Reliable liquid-fuel engine, 215 kN thrust."
+    },
+    [4 /* DECOUPLER */]: {
+      type: 4 /* DECOUPLER */,
+      name: "TR-18A Stack Decoupler",
+      dryMass: 400,
+      maxFuelMass: 0,
+      maxThrust: 0,
+      isp: 0,
+      dragCoeff: 0.1,
+      crossSection: 1.54,
+      renderW: 44,
+      renderH: 20,
+      color: "#aa8822",
+      description: "Separates rocket stages explosively."
+    },
+    [5 /* FAIRING */]: {
+      type: 5 /* FAIRING */,
+      name: "Aerodynamic Fairing",
+      dryMass: 300,
+      maxFuelMass: 0,
+      maxThrust: 0,
+      isp: 0,
+      dragCoeff: 0.05,
+      // very low drag — protects payload
+      crossSection: 2.54,
+      // slightly wider
+      renderW: 56,
+      renderH: 100,
+      color: "#3a5a7a",
+      description: "Reduces atmospheric drag on upper stages."
+    },
+    [6 /* HEAT_SHIELD */]: {
+      type: 6 /* HEAT_SHIELD */,
+      name: "Mk1 Heat Shield",
+      dryMass: 600,
+      maxFuelMass: 0,
+      maxThrust: 0,
+      isp: 0,
+      dragCoeff: 0.5,
+      // high drag — ablative braking
+      crossSection: 1.77,
+      // slightly wider than fuselage
+      renderW: 50,
+      renderH: 20,
+      color: "#2a2a2a",
+      description: "Ablative re-entry heat protection."
+    }
+  };
+  var _nextId = 1;
+  var PartInstance = class _PartInstance {
+    constructor(type, slotIndex) {
+      this.id = `part_${_nextId++}`;
+      this.def = PART_CATALOGUE[type];
+      this.fuelRemaining = this.def.maxFuelMass;
+      this.isActive = false;
+      this.stageIndex = -1;
+      this.slotIndex = slotIndex;
+    }
+    /** Current total mass of this part (dry + remaining fuel) */
+    get currentMass() {
+      return this.def.dryMass + this.fuelRemaining;
+    }
+    /** True if this part can produce thrust (engine + active + has fuel somewhere) */
+    get isThrusting() {
+      return this.def.type === 3 /* ENGINE */ && this.isActive;
+    }
+    /** True if this part is a fuel tank that still has propellant */
+    get hasFuel() {
+      return this.def.maxFuelMass > 0 && this.fuelRemaining > 0;
+    }
+    /** Drain up to `amount` kg of fuel, returns how much was actually drained */
+    drainFuel(amount) {
+      const drained = Math.min(amount, this.fuelRemaining);
+      this.fuelRemaining -= drained;
+      return drained;
+    }
+    /** Deep clone for physics prediction (map view trajectory) */
+    clone() {
+      const copy = new _PartInstance(this.def.type, this.slotIndex);
+      copy.id = this.id;
+      copy.fuelRemaining = this.fuelRemaining;
+      copy.isActive = this.isActive;
+      copy.stageIndex = this.stageIndex;
+      return copy;
+    }
+  };
+  var VAB_PALETTE = [
+    0 /* COMMAND_POD */,
+    5 /* FAIRING */,
+    2 /* FUEL_TANK_L */,
+    1 /* FUEL_TANK_S */,
+    3 /* ENGINE */,
+    4 /* DECOUPLER */,
+    6 /* HEAT_SHIELD */
+  ];
+
+  // src/Physics.ts
+  var G = 6674e-14;
+  var M_EARTH = 5972e21;
+  var R_EARTH = 6371e3;
+  var G0 = 9.80665;
+  var MU_EARTH = G * M_EARTH;
+  var REACTION_WHEEL_TORQUE = 2e5;
+  var GIMBAL_TORQUE_COEFF = 6e4;
+  var ANGULAR_DAMPING = 0.985;
+  var PhysicsEngine = class {
+    constructor(atmo) {
+      /** Accumulated mission elapsed time (seconds) */
+      this.missionTime = 0;
+      /** Last computed frame data for HUD display */
+      this.lastFrame = {
+        altitude: 0,
+        speed: 0,
+        verticalSpeed: 0,
+        horizontalSpeed: 0,
+        heatingIntensity: 0,
+        dynamicPressure: 0,
+        gravityAcc: 0,
+        dragForce: 0,
+        thrustForce: 0,
+        mach: 0,
+        atmoLayerName: "TROPOSPHERE"
+      };
+      this.atmo = atmo;
+    }
+    // ─── Main Integration Step ──────────────────────────────────────────────────
+    /**
+     * Advance the physics simulation by `dt` seconds.
+     * Modifies body.pos, body.vel, body.angle, body.angVel, body.mass in-place.
+     * Also triggers fuel consumption and staging checks on the rocket.
+     *
+     * @param body    The rocket's rigid body (mutated)
+     * @param rocket  The rocket (for thrust, mass, fuel)
+     * @param dt      Time step in seconds (should be ≤ 0.05 for stability)
+     */
+    step(body, rocket, dt) {
+      this.missionTime += dt;
+      const altitude = this.getAltitude(body.pos);
+      const rho = this.atmo.getDensity(altitude);
+      const soundSpeed = this.atmo.getSoundSpeed(altitude);
+      const r = vec2.length(body.pos);
+      const radial = r > 0 ? vec2.scale(body.pos, 1 / r) : { x: 0, y: 1 };
+      const noseDir = {
+        x: Math.sin(body.angle),
+        y: Math.cos(body.angle)
+      };
+      const gravMag = MU_EARTH / (r * r);
+      const gravForce = vec2.scale(radial, -gravMag * body.mass);
+      const thrustMag = rocket.getThrust();
+      const thrustForce = vec2.scale(noseDir, thrustMag);
+      if (thrustMag > 0) {
+        const isp = rocket.getEffectiveIsp();
+        if (isp > 0) {
+          const massFlow = thrustMag / (isp * G0);
+          rocket.consumeFuel(massFlow * dt);
+          body.mass = rocket.getTotalMass();
+        }
+      }
+      const speed = vec2.length(body.vel);
+      let dragForceMag = 0;
+      const dragForce = vec2.zero();
+      if (speed > 0 && rho > 0) {
+        const cd = rocket.getEffectiveDragCoeff();
+        const area = rocket.getCrossSection();
+        dragForceMag = 0.5 * rho * speed * speed * cd * area;
+        const velDir = vec2.normalize(body.vel);
+        dragForce.x = -velDir.x * dragForceMag;
+        dragForce.y = -velDir.y * dragForceMag;
+      }
+      const netForce = {
+        x: gravForce.x + thrustForce.x + dragForce.x,
+        y: gravForce.y + thrustForce.y + dragForce.y
+      };
+      const m = Math.max(body.mass, 1);
+      const accel = vec2.scale(netForce, 1 / m);
+      body.vel.x += accel.x * dt;
+      body.vel.y += accel.y * dt;
+      body.pos.x += body.vel.x * dt;
+      body.pos.y += body.vel.y * dt;
+      const newR = vec2.length(body.pos);
+      if (newR < R_EARTH) {
+        const surfaceDir = vec2.normalize(body.pos);
+        body.pos = vec2.scale(surfaceDir, R_EARTH);
+        const vRad = vec2.dot(body.vel, surfaceDir);
+        if (vRad < 0) {
+          body.vel.x -= surfaceDir.x * vRad;
+          body.vel.y -= surfaceDir.y * vRad;
+          body.vel.x *= 0.5;
+          body.vel.y *= 0.5;
+        }
+      }
+      body.angVel *= ANGULAR_DAMPING;
+      body.angle += body.angVel * dt;
+      const heatingIntensity = this.atmo.getHeatingIntensity(altitude, speed);
+      const mach = soundSpeed > 0 ? speed / soundSpeed : 0;
+      const atmoLayerName = this.atmo.getLayerName(altitude);
+      const verticalSpeed = vec2.dot(body.vel, radial);
+      const tangentDir = { x: -radial.y, y: radial.x };
+      const horizontalSpeed = vec2.dot(body.vel, tangentDir);
+      this.lastFrame = {
+        altitude,
+        speed,
+        verticalSpeed,
+        horizontalSpeed,
+        heatingIntensity,
+        dynamicPressure: 0.5 * rho * speed * speed,
+        gravityAcc: gravMag,
+        dragForce: dragForceMag,
+        thrustForce: thrustMag,
+        mach,
+        atmoLayerName
+      };
+    }
+    // ─── Utility Methods ────────────────────────────────────────────────────────
+    /**
+     * Altitude in metres above Earth's mean surface.
+     * @param pos  World-space position vector (m)
+     */
+    getAltitude(pos) {
+      return vec2.length(pos) - R_EARTH;
+    }
+    /**
+     * Apply a rotational input (from player controls).
+     * Adds to body.angVel; the integration step above will propagate it.
+     *
+     * @param body      The rigid body to rotate
+     * @param direction +1 = clockwise, −1 = counter-clockwise
+     * @param dt        Time step (seconds)
+     * @param hasPod    Whether a command pod (with SAS) is present
+     */
+    applyRotation(body, direction, dt, hasPod) {
+      const torque = hasPod ? REACTION_WHEEL_TORQUE : GIMBAL_TORQUE_COEFF;
+      const L = 30;
+      const I = Math.max(body.mass * L * L / 12, 1);
+      body.angVel += torque / I * direction * dt;
+    }
+    /**
+     * Quick gravity magnitude at a given altitude (m/s²).
+     * Useful for Isp conversions in vacuum vs. atmosphere.
+     */
+    getGravity(altitudeM) {
+      const r = R_EARTH + altitudeM;
+      return MU_EARTH / (r * r);
+    }
+    /**
+     * Compute the orbital speed needed for a circular orbit at a given altitude.
+     * v_circ = sqrt(μ / r)
+     */
+    circularOrbitSpeed(altitudeM) {
+      return Math.sqrt(MU_EARTH / (R_EARTH + altitudeM));
+    }
+    /**
+     * Compute orbital period for a circular orbit at a given altitude (seconds).
+     * T = 2π · sqrt(r³ / μ)
+     */
+    orbitalPeriod(altitudeM) {
+      const r = R_EARTH + altitudeM;
+      return 2 * Math.PI * Math.sqrt(r * r * r / MU_EARTH);
+    }
+    /**
+     * Reset mission time (called when starting a new launch).
+     */
+    reset() {
+      this.missionTime = 0;
+      this.lastFrame = {
+        altitude: 0,
+        speed: 0,
+        verticalSpeed: 0,
+        horizontalSpeed: 0,
+        heatingIntensity: 0,
+        dynamicPressure: 0,
+        gravityAcc: G0,
+        dragForce: 0,
+        thrustForce: 0,
+        mach: 0,
+        atmoLayerName: "TROPOSPHERE"
+      };
+    }
+    /**
+     * Clone a RigidBody for trajectory prediction (does not modify original).
+     */
+    cloneBody(body) {
+      return {
+        pos: vec2.clone(body.pos),
+        vel: vec2.clone(body.vel),
+        angle: body.angle,
+        angVel: body.angVel,
+        mass: body.mass
+      };
+    }
+  };
+
+  // src/Rocket.ts
+  var LAUNCH_LAT_RAD = 28.5 * (Math.PI / 180);
+  var SURFACE_SPEED = R_EARTH * (2 * Math.PI / 86400) * Math.cos(LAUNCH_LAT_RAD);
+  var Rocket = class _Rocket {
+    constructor() {
+      /** Ordered part stack: index 0 = bottommost part (engine/heat-shield end) */
+      this.parts = [];
+      /** Stage data: stageIndex 0 fires first (press Space once), etc. */
+      this.stages = [];
+      /** Current highest stage that has been activated (−1 = none yet) */
+      this.currentStage = -1;
+      /** Physics body — initialised when rocket is placed on launchpad */
+      this.body = {
+        pos: { x: 0, y: R_EARTH },
+        vel: { x: SURFACE_SPEED, y: 0 },
+        angle: 0,
+        angVel: 0,
+        mass: 0
+      };
+      /** Whether rocket has left the ground */
+      this.hasLaunched = false;
+      /** Whether rocket has been destroyed (crashed / overheated) */
+      this.isDestroyed = false;
+      /** Current throttle 0–1, set by Game.ts each frame before physics.step */
+      this.throttle = 0;
+    }
+    // ─── VAB Assembly ───────────────────────────────────────────────────────────
+    /**
+     * Add a part to the top of the rocket stack in the VAB.
+     * Automatically assigns a slot index.
+     */
+    addPartOnTop(type) {
+      const slot = this.parts.length;
+      const inst = new PartInstance(type, slot);
+      this.parts.push(inst);
+      this._refreshMass();
+      return inst;
+    }
+    /**
+     * Remove a part by its ID (VAB editing).
+     * Re-indexes remaining slots.
+     */
+    removePartById(id) {
+      const idx = this.parts.findIndex((p) => p.id === id);
+      if (idx === -1)
+        return;
+      this.parts.splice(idx, 1);
+      for (let i = 0; i < this.parts.length; i++) {
+        this.parts[i].slotIndex = i;
+      }
+      this._refreshMass();
+    }
+    /** Clear all parts (reset for new build) */
+    clearParts() {
+      this.parts = [];
+      this.stages = [];
+      this.currentStage = -1;
+      this._refreshMass();
+    }
+    /**
+     * Insert a part at a specific slot index (0 = bottom/engine end).
+     * Parts at or above the insertion point shift up by one.
+     * @param type  Part type to add
+     * @param slot  Target slot (clamps to valid range)
+     */
+    insertPartAt(type, slot) {
+      const inst = new PartInstance(type, 0);
+      const s = Math.max(0, Math.min(slot, this.parts.length));
+      this.parts.splice(s, 0, inst);
+      for (let i = 0; i < this.parts.length; i++)
+        this.parts[i].slotIndex = i;
+      this._refreshMass();
+      return inst;
+    }
+    /** Total rendered height of the rocket stack in pixels (for VAB display) */
+    get stackHeightPx() {
+      return this.parts.reduce((sum, p) => sum + p.def.renderH, 0);
+    }
+    // ─── Staging ────────────────────────────────────────────────────────────────
+    /**
+     * Auto-generate stages based on part types.
+     * Default strategy:
+     *   • Each engine + its adjacent decoupler = one stage
+     *   • Command pod/fairings are in stage −1 (always active / manual)
+     * This produces sensible staging for a typical rocket without user input.
+     */
+    autoStage() {
+      this.stages = [];
+      let stageIdx = 0;
+      for (const part of this.parts) {
+        if (part.def.type === 3 /* ENGINE */ || part.def.type === 4 /* DECOUPLER */) {
+          part.stageIndex = stageIdx;
+        } else {
+          part.stageIndex = -1;
+        }
+      }
+      this._rebuildStages();
+    }
+    /**
+     * Assign a part to a specific stage (called from staging screen).
+     */
+    assignStage(partId, stageIndex) {
+      const part = this.parts.find((p) => p.id === partId);
+      if (part) {
+        part.stageIndex = stageIndex;
+        this._rebuildStages();
+      }
+    }
+    /**
+     * Activate the next stage (Space key).
+     * Fires engines and triggers decouplers assigned to currentStage + 1.
+     * Returns true if a stage was activated, false if no more stages.
+     */
+    activateNextStage() {
+      const nextStage = this.currentStage + 1;
+      const stage = this.stages.find((s) => s.stageIndex === nextStage);
+      if (!stage)
+        return false;
+      this.currentStage = nextStage;
+      const toSeparate = [];
+      for (const partId of stage.partIds) {
+        const part = this.parts.find((p) => p.id === partId);
+        if (!part)
+          continue;
+        if (part.def.type === 3 /* ENGINE */) {
+          part.isActive = true;
+        } else if (part.def.type === 4 /* DECOUPLER */) {
+          part.isActive = true;
+          toSeparate.push(partId);
+        }
+      }
+      this._separateAt(toSeparate);
+      return true;
+    }
+    /**
+     * Deactivate all engines (throttle cut).
+     */
+    cutEngines() {
+      for (const part of this.parts) {
+        if (part.def.type === 3 /* ENGINE */) {
+          part.isActive = false;
+        }
+      }
+    }
+    // ─── Aggregate Physics Properties ───────────────────────────────────────────
+    /** Total current mass (dry + remaining fuel) in kg */
+    getTotalMass() {
+      return this.parts.reduce((sum, p) => sum + p.currentMass, 0);
+    }
+    /**
+     * Total thrust from all active (firing) engines in Newtons.
+     * Uses this.throttle (set by Game.ts each frame).
+     */
+    getThrust() {
+      return this.parts.filter((p) => p.isThrusting).reduce((sum, p) => sum + p.def.maxThrust * this.throttle, 0);
+    }
+    /**
+     * Effective vacuum Isp of the active engine set (thrust-weighted average).
+     * Used to compute mass flow: ṁ = F / (Isp · g₀).
+     */
+    getEffectiveIsp() {
+      const engines = this.parts.filter((p) => p.isThrusting);
+      if (engines.length === 0)
+        return 0;
+      const totalThrust = engines.reduce((s, p) => s + p.def.maxThrust, 0);
+      const weightedIsp = engines.reduce((s, p) => s + p.def.maxThrust * p.def.isp, 0);
+      return totalThrust > 0 ? weightedIsp / totalThrust : 0;
+    }
+    /**
+     * Effective drag coefficient.
+     * Simplified: use the part with the largest cross section that faces the flow.
+     * For a stack rocket, the bottom-most part dominates drag.
+     */
+    getEffectiveDragCoeff() {
+      if (this.parts.length === 0)
+        return 0;
+      const totalArea = this.parts.reduce((s, p) => s + p.def.crossSection, 0);
+      if (totalArea === 0)
+        return 0;
+      return this.parts.reduce((s, p) => s + p.def.dragCoeff * p.def.crossSection, 0) / totalArea;
+    }
+    /**
+     * Largest cross-section among all current parts (m²).
+     * Used as the reference area for drag calculation.
+     */
+    getCrossSection() {
+      return this.parts.reduce((max, p) => Math.max(max, p.def.crossSection), 0);
+    }
+    /**
+     * Drain fuel from active tanks to satisfy `massKg` total consumption.
+     * Drains from the bottom-most (closest to engine) tank first.
+     * Deactivates engines when all fuel is gone.
+     */
+    consumeFuel(massKg) {
+      let remaining = massKg;
+      const tanks = this.parts.filter((p) => p.hasFuel).sort((a, b) => a.slotIndex - b.slotIndex);
+      for (const tank of tanks) {
+        if (remaining <= 0)
+          break;
+        const drained = tank.drainFuel(remaining);
+        remaining -= drained;
+      }
+      if (!this.parts.some((p) => p.hasFuel)) {
+        this.cutEngines();
+      }
+    }
+    /** True if any engine is actively burning */
+    get isThrusting() {
+      return this.parts.some((p) => p.isThrusting);
+    }
+    /** Total fuel remaining across all tanks (kg) */
+    get totalFuelRemaining() {
+      return this.parts.reduce((s, p) => s + p.fuelRemaining, 0);
+    }
+    /** Max fuel capacity across all tanks (kg) — for HUD gauge */
+    get totalFuelCapacity() {
+      return this.parts.reduce((s, p) => s + p.def.maxFuelMass, 0);
+    }
+    /** Whether the rocket has a command pod (needed for SAS / reaction wheels) */
+    get hasCommandPod() {
+      return this.parts.some((p) => p.def.type === 0 /* COMMAND_POD */);
+    }
+    /** Whether the rocket is sitting on the ground */
+    get isOnGround() {
+      return !this.hasLaunched;
+    }
+    // ─── Launch Initialisation ──────────────────────────────────────────────────
+    /**
+     * Place the rocket on the launchpad.
+     * Positions it at Earth's surface pointing straight up.
+     * Gives it Earth's surface rotation velocity (eastward).
+     */
+    placeOnLaunchpad() {
+      this.body.pos = { x: 0, y: R_EARTH + 1 };
+      this.body.vel = { x: SURFACE_SPEED, y: 0 };
+      this.body.angle = 0;
+      this.body.angVel = 0;
+      this.body.mass = this.getTotalMass();
+      this.hasLaunched = false;
+      this.isDestroyed = false;
+      this.currentStage = -1;
+      for (const part of this.parts) {
+        if (part.def.type === 3 /* ENGINE */)
+          part.isActive = false;
+      }
+    }
+    // ─── Cloning (for trajectory prediction) ─────────────────────────────────
+    /**
+     * Create a lightweight clone of this rocket for numerical integration
+     * in MapView trajectory prediction.  Only copies what physics needs.
+     */
+    cloneForPrediction() {
+      const clone = new _Rocket();
+      clone.parts = this.parts.map((p) => p.clone());
+      clone.stages = this.stages.map((s) => ({ ...s, partIds: [...s.partIds] }));
+      clone.currentStage = this.currentStage;
+      clone.body = {
+        pos: vec2.clone(this.body.pos),
+        vel: vec2.clone(this.body.vel),
+        angle: this.body.angle,
+        angVel: this.body.angVel,
+        mass: this.body.mass
+      };
+      return clone;
+    }
+    // ─── Delta-V Budget ─────────────────────────────────────────────────────────
+    /**
+     * Compute total remaining ΔV using the Tsiolkovsky rocket equation:
+     *   ΔV = Isp · g₀ · ln(m₀ / m_dry)
+     * Summed across all remaining stages.
+     */
+    getDeltaV() {
+      const engines = this.parts.filter((p) => p.def.type === 3 /* ENGINE */);
+      if (engines.length === 0)
+        return 0;
+      const isp = this.getEffectiveIsp();
+      const m0 = this.getTotalMass();
+      const m_dry = this.parts.reduce((s, p) => s + p.def.dryMass, 0);
+      if (m_dry <= 0 || m0 <= m_dry)
+        return 0;
+      return isp * G0 * Math.log(m0 / m_dry);
+    }
+    // ─── Private Helpers ────────────────────────────────────────────────────────
+    _refreshMass() {
+      this.body.mass = this.getTotalMass();
+    }
+    _rebuildStages() {
+      const map = /* @__PURE__ */ new Map();
+      for (const part of this.parts) {
+        if (part.stageIndex < 0)
+          continue;
+        if (!map.has(part.stageIndex))
+          map.set(part.stageIndex, []);
+        map.get(part.stageIndex).push(part.id);
+      }
+      this.stages = Array.from(map.entries()).map(([idx, ids]) => ({ stageIndex: idx, partIds: ids })).sort((a, b) => a.stageIndex - b.stageIndex);
+    }
+    /**
+     * Remove decouplers (and everything below them) from the parts list.
+     * @param decouplerIds  IDs of decouplers that were triggered
+     */
+    _separateAt(decouplerIds) {
+      if (decouplerIds.length === 0)
+        return;
+      let lowestSlot = Infinity;
+      for (const id of decouplerIds) {
+        const part = this.parts.find((p) => p.id === id);
+        if (part && part.slotIndex < lowestSlot) {
+          lowestSlot = part.slotIndex;
+        }
+      }
+      this.parts = this.parts.filter((p) => p.slotIndex > lowestSlot);
+      for (let i = 0; i < this.parts.length; i++) {
+        this.parts[i].slotIndex = i;
+      }
+      this._refreshMass();
+      this._rebuildStages();
+    }
+  };
+
+  // src/Atmosphere.ts
+  var ATMOSPHERE_CEILING = 7e4;
+  var RHO_0 = 1.225;
+  var SCALE_HEIGHT = 8500;
+  var P_0 = 101325;
+  var LAPSE_RATE = 65e-4;
+  var T_0 = 288.15;
+  var ATMO_LAYERS = [
+    { name: "TROPOSPHERE", minAlt: 0, maxAlt: 12e3, skyRgb: [100, 160, 255] },
+    { name: "STRATOSPHERE", minAlt: 12e3, maxAlt: 5e4, skyRgb: [30, 80, 200] },
+    { name: "MESOSPHERE", minAlt: 5e4, maxAlt: 8e4, skyRgb: [10, 20, 80] },
+    { name: "THERMOSPHERE", minAlt: 8e4, maxAlt: 69e4, skyRgb: [5, 8, 25] },
+    { name: "EXOSPHERE", minAlt: 69e4, maxAlt: Infinity, skyRgb: [2, 3, 10] }
+  ];
+  var Atmosphere = class {
+    /**
+     * Air density at a given altitude above mean sea level (kg/m³).
+     * Returns 0 above the atmosphere ceiling.
+     *
+     * @param altitudeM  Altitude in metres above Earth's surface
+     */
+    getDensity(altitudeM) {
+      if (altitudeM >= ATMOSPHERE_CEILING)
+        return 0;
+      if (altitudeM < 0)
+        altitudeM = 0;
+      return RHO_0 * Math.exp(-altitudeM / SCALE_HEIGHT);
+    }
+    /**
+     * Atmospheric pressure at a given altitude (Pa).
+     * Uses a simple power-law approximation (ISA troposphere formula).
+     *
+     * @param altitudeM  Altitude in metres above Earth's surface
+     */
+    getPressure(altitudeM) {
+      if (altitudeM >= ATMOSPHERE_CEILING)
+        return 0;
+      if (altitudeM < 0)
+        altitudeM = 0;
+      const T = T_0 - LAPSE_RATE * Math.min(altitudeM, 11e3);
+      return P_0 * Math.pow(T / T_0, 5.2561);
+    }
+    /**
+     * Returns true if the given altitude is within the sensible atmosphere
+     * (i.e., drag and heating effects are non-negligible).
+     *
+     * @param altitudeM  Altitude in metres
+     */
+    isInAtmosphere(altitudeM) {
+      return altitudeM < ATMOSPHERE_CEILING;
+    }
+    /**
+     * Dynamic pressure experienced at a given altitude and speed.
+     * q = 0.5 · ρ · v²
+     * Units: Pa (N/m²)
+     *
+     * @param altitudeM  Altitude in metres
+     * @param speedMs    Speed relative to the atmosphere in m/s
+     */
+    getDynamicPressure(altitudeM, speedMs) {
+      return 0.5 * this.getDensity(altitudeM) * speedMs * speedMs;
+    }
+    /**
+     * Aerodynamic heating rate coefficient.
+     * Stagnation heating: q̇ ∝ ρ · v³
+     * Returns a dimensionless 0–1 value indicating heating intensity.
+     * Peaks at ~1 during fast low-altitude re-entry.
+     *
+     * @param altitudeM  Altitude in metres
+     * @param speedMs    Speed relative to atmosphere in m/s
+     */
+    getHeatingIntensity(altitudeM, speedMs) {
+      const rho = this.getDensity(altitudeM);
+      const Ck = 174e-12;
+      const raw = Ck * rho * speedMs * speedMs * speedMs;
+      return Math.min(raw, 1);
+    }
+    /**
+     * Sound speed in m/s at a given altitude (approximate).
+     * Used to compute Mach number for drag effects.
+     *
+     * @param altitudeM  Altitude in metres
+     */
+    getSoundSpeed(altitudeM) {
+      if (altitudeM >= ATMOSPHERE_CEILING)
+        return 0;
+      const T = Math.max(T_0 - LAPSE_RATE * Math.min(altitudeM, 11e3), 216.65);
+      return Math.sqrt(1.4 * 287 * T);
+    }
+    // ─── Layer helpers ─────────────────────────────────────────────────────────
+    getLayer(altitudeM) {
+      const alt = Math.max(0, altitudeM);
+      for (const layer of ATMO_LAYERS) {
+        if (alt < layer.maxAlt)
+          return layer;
+      }
+      return ATMO_LAYERS[ATMO_LAYERS.length - 1];
+    }
+    getLayerName(altitudeM) {
+      return this.getLayer(altitudeM).name;
+    }
+    /** CSS rgba colour for the sky at the given altitude (used by Renderer). */
+    getSkyColor(altitudeM, alpha = 1) {
+      const [r, g, b] = this.getLayer(altitudeM).skyRgb;
+      return `rgba(${r},${g},${b},${alpha.toFixed(2)})`;
+    }
+  };
+
+  // src/Renderer.ts
+  function generateStars(count, seed = 42) {
+    const stars = [];
+    let s = seed;
+    const rand = () => {
+      s = s * 1664525 + 1013904223 & 4294967295;
+      return (s >>> 0) / 4294967295;
+    };
+    for (let i = 0; i < count; i++) {
+      stars.push({
+        x: rand(),
+        y: rand(),
+        r: rand() < 0.05 ? rand() * 1.8 + 0.8 : rand() * 0.8 + 0.3,
+        bright: rand() * 0.7 + 0.3
+      });
+    }
+    return stars;
+  }
+  var STARS = generateStars(600);
+  var Renderer = class {
+    constructor(ctx) {
+      /** Elapsed time in seconds — used for animated effects */
+      this.time = 0;
+      this.ctx = ctx;
+      this.W = ctx.canvas.width;
+      this.H = ctx.canvas.height;
+    }
+    resize(w, h) {
+      this.W = w;
+      this.H = h;
+    }
+    // ─── Full Flight Scene ────────────────────────────────────────────────────
+    /**
+     * Render one frame of the flight scene.
+     * @param rocket      Current rocket state
+     * @param frame       Latest physics frame data
+     * @param throttle    Current throttle 0–1
+     */
+    renderFlight(rocket, frame, throttle) {
+      const ctx = this.ctx;
+      const { H } = this;
+      const alt = frame.altitude;
+      const viewHeightM = 2e4 + alt * alt / 5e4;
+      const mpp = viewHeightM / H;
+      const camera = {
+        focus: vec2.clone(rocket.body.pos),
+        metersPerPixel: mpp
+      };
+      this._drawSkyBackground(alt);
+      const starFade = alt < 3e4 ? alt / 3e4 : 1;
+      this._drawStars(camera, starFade);
+      this._drawEarth(camera);
+      this._drawLaunchpad(camera);
+      const rocketScreenPos = this._worldToScreen(rocket.body.pos, camera);
+      ctx.save();
+      ctx.translate(rocketScreenPos.x, rocketScreenPos.y);
+      ctx.rotate(rocket.body.angle);
+      const partScale = Math.max(3 / mpp, 1);
+      if (rocket.isThrusting && throttle > 0) {
+        this._drawExhaustPlume(rocket, partScale, throttle);
+      }
+      this._drawRocketParts(rocket, partScale);
+      if (frame.heatingIntensity > 0.01) {
+        this._drawHeatGlow(rocket, partScale, frame.heatingIntensity);
+      }
+      if (frame.heatingIntensity > 0.3 && frame.speed > 3e3) {
+        this._drawPlasma(rocket, partScale, frame.heatingIntensity);
+      }
+      ctx.restore();
+    }
+    // ─── Earth & Atmosphere ───────────────────────────────────────────────────
+    _drawEarth(cam) {
+      const ctx = this.ctx;
+      const earthScreen = this._worldToScreen({ x: 0, y: 0 }, cam);
+      const earthRadPx = R_EARTH / cam.metersPerPixel;
+      const atmoRadPx = (R_EARTH + 7e4) / cam.metersPerPixel;
+      const atmoGrad = ctx.createRadialGradient(
+        earthScreen.x,
+        earthScreen.y,
+        earthRadPx * 0.98,
+        earthScreen.x,
+        earthScreen.y,
+        atmoRadPx
+      );
+      atmoGrad.addColorStop(0, "rgba(80,160,255,0.35)");
+      atmoGrad.addColorStop(0.5, "rgba(40,100,200,0.12)");
+      atmoGrad.addColorStop(1, "rgba(0,30,80,0)");
+      ctx.beginPath();
+      ctx.arc(earthScreen.x, earthScreen.y, atmoRadPx, 0, Math.PI * 2);
+      ctx.fillStyle = atmoGrad;
+      ctx.fill();
+      const earthGrad = ctx.createRadialGradient(
+        earthScreen.x - earthRadPx * 0.3,
+        earthScreen.y - earthRadPx * 0.3,
+        earthRadPx * 0.1,
+        earthScreen.x,
+        earthScreen.y,
+        earthRadPx
+      );
+      earthGrad.addColorStop(0, "#4a9eff");
+      earthGrad.addColorStop(0.38, "#2266cc");
+      earthGrad.addColorStop(0.68, "#1a5533");
+      earthGrad.addColorStop(0.84, "#2e7d32");
+      earthGrad.addColorStop(0.94, "#12380e");
+      earthGrad.addColorStop(1, "#061008");
+      ctx.beginPath();
+      ctx.arc(earthScreen.x, earthScreen.y, earthRadPx, 0, Math.PI * 2);
+      ctx.fillStyle = earthGrad;
+      ctx.fill();
+      if (earthRadPx < this.H * 0.45) {
+        const grassW = Math.max(2, Math.min(earthRadPx * 0.018, 20));
+        ctx.beginPath();
+        ctx.arc(earthScreen.x, earthScreen.y, earthRadPx - grassW * 0.5, 0, Math.PI * 2);
+        ctx.strokeStyle = "#3e8b30";
+        ctx.lineWidth = grassW;
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.arc(earthScreen.x, earthScreen.y, earthRadPx, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(100,180,255,0.12)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+    // ─── Ground / Launchpad Surface ───────────────────────────────────────────
+    _drawLaunchpad(cam) {
+      const ls = this._worldToScreen({ x: 0, y: R_EARTH }, cam);
+      const mpp = cam.metersPerPixel;
+      if (ls.y < -300 || ls.y > this.H + 50)
+        return;
+      const ctx = this.ctx;
+      const { W } = this;
+      const grassH = Math.max(3, 18 / mpp);
+      ctx.fillStyle = "#3a7a28";
+      ctx.fillRect(0, ls.y - grassH, W, grassH + 2);
+      ctx.fillStyle = "#2a5a20";
+      ctx.fillRect(0, ls.y, W, Math.min(60, grassH * 3));
+      const padW = Math.max(8, 100 / mpp);
+      const padH = Math.max(3, 8 / mpp);
+      ctx.fillStyle = "#909088";
+      ctx.fillRect(ls.x - padW / 2, ls.y - padH - grassH + 2, padW, padH);
+      if (padW > 12) {
+        ctx.strokeStyle = "#ffcc00";
+        ctx.lineWidth = Math.max(1, padW / 30);
+        ctx.beginPath();
+        ctx.moveTo(ls.x, ls.y - grassH + 2);
+        ctx.lineTo(ls.x, ls.y - padH - grassH + 2);
+        ctx.stroke();
+      }
+      const towerH = 120 / mpp;
+      if (towerH < 5)
+        return;
+      const tx = ls.x + padW * 0.38;
+      const baseY = ls.y - padH - grassH + 2;
+      ctx.strokeStyle = "#aaa890";
+      ctx.lineWidth = Math.max(1.5, Math.min(5, 4 / mpp));
+      ctx.beginPath();
+      ctx.moveTo(tx, baseY);
+      ctx.lineTo(tx, baseY - towerH);
+      ctx.stroke();
+      if (towerH > 18) {
+        ctx.lineWidth = Math.max(1, Math.min(3, 2.5 / mpp));
+        for (let i = 1; i <= 3; i++) {
+          const armY = baseY - towerH * i / 4;
+          const armLen = padW * 0.38 * (1 - i * 0.12);
+          ctx.beginPath();
+          ctx.moveTo(tx, armY);
+          ctx.lineTo(tx - armLen, armY);
+          ctx.stroke();
+          if (towerH > 35) {
+            ctx.beginPath();
+            ctx.moveTo(tx - armLen * 0.55, armY);
+            ctx.lineTo(tx, armY - towerH * 0.14);
+            ctx.stroke();
+          }
+        }
+      }
+      if (towerH > 25) {
+        const alpha = 0.4 + 0.55 * Math.abs(Math.sin(this.time * 2.2));
+        ctx.beginPath();
+        ctx.arc(tx, baseY - towerH, Math.max(2, 3 / mpp), 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255,60,20,${alpha.toFixed(2)})`;
+        ctx.fill();
+      }
+    }
+    // ─── Sky Background ───────────────────────────────────────────────────────
+    _drawSkyBackground(altM) {
+      const ctx = this.ctx;
+      const { W, H } = this;
+      let r, g, b;
+      if (altM < 12e3) {
+        const t = altM / 12e3;
+        r = Math.round(100 - 70 * t);
+        g = Math.round(160 - 80 * t);
+        b = Math.round(255 - 55 * t);
+      } else if (altM < 5e4) {
+        const t = (altM - 12e3) / 38e3;
+        r = Math.round(30 - 20 * t);
+        g = Math.round(80 - 60 * t);
+        b = Math.round(200 - 120 * t);
+      } else if (altM < 8e4) {
+        const t = (altM - 5e4) / 3e4;
+        r = 10;
+        g = Math.round(20 - 10 * t);
+        b = Math.round(80 - 62 * t);
+      } else {
+        r = 10;
+        g = 10;
+        b = 18;
+      }
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+    // ─── Starfield ────────────────────────────────────────────────────────────
+    _drawStars(cam, opacity = 1) {
+      const ctx = this.ctx;
+      const { W, H } = this;
+      if (opacity <= 0)
+        return;
+      const px = cam.focus.x / R_EARTH * 80 % W;
+      const py = cam.focus.y / R_EARTH * 80 % H;
+      ctx.save();
+      for (const s of STARS) {
+        const sx = ((s.x * W + px) % W + W) % W;
+        const sy = ((s.y * H + py) % H + H) % H;
+        ctx.beginPath();
+        ctx.arc(sx, sy, s.r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255,255,255,${(s.bright * opacity).toFixed(2)})`;
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    // ─── Rocket Parts ─────────────────────────────────────────────────────────
+    /**
+     * Draw all parts as coloured rectangles centred at origin (0,0),
+     * stacked vertically (slot 0 at bottom, highest slot at top).
+     * The caller must have already applied rocket position + rotation transforms.
+     */
+    _drawRocketParts(rocket, scale) {
+      const ctx = this.ctx;
+      if (rocket.parts.length === 0)
+        return;
+      const totalH = rocket.parts.reduce((s, p) => s + p.def.renderH * scale, 0);
+      let yBottom = totalH / 2;
+      for (const part of rocket.parts) {
+        const w = part.def.renderW * scale;
+        const h = part.def.renderH * scale;
+        const x = -w / 2;
+        const y = yBottom - h;
+        ctx.fillStyle = part.def.color;
+        this._roundRect(x, y, w, h, 3 * scale);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,0.15)";
+        ctx.lineWidth = 1 * scale;
+        this._roundRect(x, y, w, h, 3 * scale);
+        ctx.stroke();
+        this._drawPartDecoration(part.def.type, x, y, w, h, scale, part);
+        yBottom -= h;
+      }
+    }
+    _drawPartDecoration(type, x, y, w, h, scale, part) {
+      const ctx = this.ctx;
+      switch (type) {
+        case 0 /* COMMAND_POD */: {
+          ctx.beginPath();
+          ctx.ellipse(x + w * 0.5, y + h * 0.35, w * 0.22, h * 0.18, 0, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(150,220,255,0.6)";
+          ctx.fill();
+          ctx.fillStyle = "#aaa";
+          ctx.fillRect(x + w * 0.45, y, w * 0.1, 5 * scale);
+          break;
+        }
+        case 1 /* FUEL_TANK_S */:
+        case 2 /* FUEL_TANK_L */: {
+          const frac = part.def.maxFuelMass > 0 ? part.fuelRemaining / part.def.maxFuelMass : 0;
+          const barH = (h - 8 * scale) * frac;
+          ctx.fillStyle = frac > 0.3 ? "rgba(0,200,100,0.35)" : "rgba(255,80,0,0.45)";
+          ctx.fillRect(x + w * 0.2, y + (h - 4 * scale) - barH, w * 0.6, barH);
+          break;
+        }
+        case 3 /* ENGINE */: {
+          const nozzleW = w * 1.1;
+          ctx.beginPath();
+          ctx.moveTo(x + (w - nozzleW) / 2, y + h * 0.7);
+          ctx.lineTo(x + (w + nozzleW) / 2, y + h * 0.7);
+          ctx.lineTo(x + w * 0.7, y + h);
+          ctx.lineTo(x + w * 0.3, y + h);
+          ctx.closePath();
+          ctx.fillStyle = "#5a4030";
+          ctx.fill();
+          break;
+        }
+        case 4 /* DECOUPLER */: {
+          ctx.fillStyle = "#ffcc00";
+          ctx.fillRect(x, y + h * 0.3, w, h * 0.4);
+          break;
+        }
+        case 6 /* HEAT_SHIELD */: {
+          ctx.fillStyle = "rgba(255,100,0,0.25)";
+          ctx.fillRect(x, y, w, h);
+          ctx.fillStyle = "#111";
+          ctx.fillRect(x + 2 * scale, y + 2 * scale, w - 4 * scale, h * 0.4);
+          break;
+        }
+        case 5 /* FAIRING */: {
+          ctx.beginPath();
+          ctx.moveTo(x + w / 2, y);
+          ctx.lineTo(x + w * 0.05, y + h * 0.4);
+          ctx.lineTo(x + w * 0.95, y + h * 0.4);
+          ctx.closePath();
+          ctx.fillStyle = "#2a4a6a";
+          ctx.fill();
+          break;
+        }
+      }
+    }
+    // ─── Exhaust Plume ────────────────────────────────────────────────────────
+    _drawExhaustPlume(rocket, scale, throttle) {
+      const ctx = this.ctx;
+      const totalH = rocket.parts.reduce((s, p) => s + p.def.renderH * scale, 0);
+      const plumeY = totalH / 2;
+      const plumeLen = (80 + throttle * 120) * scale;
+      const plumeW = (22 + throttle * 18) * scale;
+      const grad = ctx.createLinearGradient(0, plumeY, 0, plumeY + plumeLen);
+      grad.addColorStop(0, THEME.exhaustCore);
+      grad.addColorStop(0.08, THEME.exhaustMid);
+      grad.addColorStop(0.4, THEME.engineFire);
+      grad.addColorStop(1, THEME.exhaustEdge);
+      ctx.save();
+      const flicker = 1 + (Math.sin(this.time * 40) * 0.05 + Math.cos(this.time * 67) * 0.03);
+      ctx.scale(flicker, 1);
+      ctx.beginPath();
+      ctx.moveTo(0, plumeY);
+      ctx.bezierCurveTo(
+        plumeW / 2,
+        plumeY + plumeLen * 0.3,
+        plumeW * 0.7,
+        plumeY + plumeLen * 0.6,
+        0,
+        plumeY + plumeLen
+      );
+      ctx.bezierCurveTo(
+        -plumeW * 0.7,
+        plumeY + plumeLen * 0.6,
+        -plumeW / 2,
+        plumeY + plumeLen * 0.3,
+        0,
+        plumeY
+      );
+      ctx.fillStyle = grad;
+      ctx.fill();
+      const coreLen = plumeLen * 0.25;
+      const coreGrad = ctx.createLinearGradient(0, plumeY, 0, plumeY + coreLen);
+      coreGrad.addColorStop(0, "rgba(255,255,255,0.95)");
+      coreGrad.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.beginPath();
+      ctx.ellipse(0, plumeY + coreLen / 2, plumeW * 0.18, coreLen / 2, 0, 0, Math.PI * 2);
+      ctx.fillStyle = coreGrad;
+      ctx.fill();
+      ctx.restore();
+    }
+    // ─── Heat Glow ────────────────────────────────────────────────────────────
+    _drawHeatGlow(_rocket, scale, intensity) {
+      const ctx = this.ctx;
+      const glowR = (80 + intensity * 200) * scale;
+      const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, glowR);
+      const alpha = Math.min(intensity * 0.85, 0.75);
+      grad.addColorStop(0, `rgba(255,220,80,${alpha})`);
+      grad.addColorStop(0.3, `rgba(255,100,0,${alpha * 0.6})`);
+      grad.addColorStop(0.7, `rgba(200,0,0,${alpha * 0.2})`);
+      grad.addColorStop(1, "rgba(200,0,0,0)");
+      ctx.save();
+      ctx.globalCompositeOperation = "screen";
+      ctx.beginPath();
+      ctx.arc(0, 0, glowR, 0, Math.PI * 2);
+      ctx.fillStyle = grad;
+      ctx.fill();
+      ctx.globalCompositeOperation = "source-over";
+      ctx.restore();
+    }
+    // ─── Plasma Effect (reentry) ──────────────────────────────────────────────
+    _drawPlasma(_rocket, scale, intensity) {
+      const ctx = this.ctx;
+      const t = this.time;
+      const streakR = (50 + intensity * 150) * scale;
+      ctx.save();
+      ctx.globalCompositeOperation = "screen";
+      for (let i = 0; i < 14; i++) {
+        const phase = i / 14 * Math.PI * 2 + t * 4.5;
+        const spread = 0.4 + intensity * 0.6;
+        const startA = phase - spread;
+        const endA = phase + spread;
+        const r = streakR * (0.6 + Math.sin(t * 7 + i) * 0.4);
+        const hue = 180 + Math.sin(t * 3 + i) * 40;
+        const alpha = intensity * (0.5 + Math.sin(t * 5 + i * 1.3) * 0.3);
+        ctx.beginPath();
+        ctx.arc(0, 0, r, startA, endA);
+        ctx.strokeStyle = `hsla(${hue},100%,75%,${alpha.toFixed(2)})`;
+        ctx.lineWidth = (3 + Math.sin(t * 11 + i) * 2) * scale;
+        ctx.stroke();
+      }
+      const shockGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, streakR * 0.5);
+      shockGrad.addColorStop(0, `rgba(200,240,255,${intensity * 0.5})`);
+      shockGrad.addColorStop(1, "rgba(0,200,255,0)");
+      ctx.beginPath();
+      ctx.arc(0, 0, streakR * 0.5, 0, Math.PI * 2);
+      ctx.fillStyle = shockGrad;
+      ctx.fill();
+      ctx.globalCompositeOperation = "source-over";
+      ctx.restore();
+    }
+    // ─── VAB Preview ──────────────────────────────────────────────────────────
+    /**
+     * Draw the rocket stack in the VAB build area, sitting on the launchpad.
+     * @param cx       Centre-X of the build area in screen pixels
+     * @param bottomY  Y coordinate of the launchpad line in screen pixels
+     * @returns        Screen bounds for each rendered part (used for click-to-remove)
+     */
+    renderVABRocket(rocket, cx, bottomY) {
+      const ctx = this.ctx;
+      if (rocket.parts.length === 0)
+        return [];
+      const available = bottomY - 40;
+      const naturalH = rocket.parts.reduce((s, p) => s + p.def.renderH, 0);
+      const scale = naturalH > 0 ? Math.min(1.8, available / naturalH) : 1.8;
+      const bounds = [];
+      ctx.save();
+      let yBottom = bottomY;
+      for (const part of rocket.parts) {
+        const w = part.def.renderW * scale;
+        const h = part.def.renderH * scale;
+        const x = cx - w / 2;
+        const y = yBottom - h;
+        bounds.push({ id: part.id, x, y, w, h });
+        ctx.fillStyle = part.def.color;
+        this._roundRect(x, y, w, h, 4);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,0.2)";
+        ctx.lineWidth = 1;
+        this._roundRect(x, y, w, h, 4);
+        ctx.stroke();
+        this._drawPartDecoration(part.def.type, x, y, w, h, scale, part);
+        ctx.fillStyle = "rgba(255,255,255,0.85)";
+        ctx.font = "9px Courier New";
+        ctx.textAlign = "center";
+        ctx.fillText(part.def.name.slice(0, 14), cx, y + h * 0.55);
+        yBottom -= h;
+      }
+      const topY = yBottom;
+      ctx.beginPath();
+      ctx.arc(cx, topY, 5, 0, Math.PI * 2);
+      ctx.fillStyle = THEME.accent;
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(cx, topY, 9, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(0,212,255,0.35)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.restore();
+      return bounds;
+    }
+    // ─── HUD ──────────────────────────────────────────────────────────────────
+    /**
+     * Draw the in-flight HUD overlay (screen-space, no transform needed).
+     */
+    renderHUD(rocket, frame, throttle, currentStage, missionTime) {
+      const ctx = this.ctx;
+      const { W, H } = this;
+      const panelX = 16, panelY = 16, panelW = 220, panelH = 202;
+      this._drawPanel(panelX, panelY, panelW, panelH);
+      ctx.fillStyle = THEME.textDim;
+      ctx.font = "11px Courier New";
+      ctx.textAlign = "left";
+      const alt = frame.altitude;
+      const altStr = alt < 1e3 ? `${alt.toFixed(0)} m` : alt < 1e6 ? `${(alt / 1e3).toFixed(2)} km` : `${(alt / 1e6).toFixed(4)} Mm`;
+      const rows = [
+        ["ALT", altStr],
+        ["SPD", `${frame.speed.toFixed(1)} m/s`],
+        ["VERT", `${frame.verticalSpeed > 0 ? "+" : ""}${frame.verticalSpeed.toFixed(1)} m/s`],
+        ["MACH", `${frame.mach.toFixed(2)}`],
+        ["Q", `${(frame.dynamicPressure / 1e3).toFixed(2)} kPa`],
+        ["\u0394V", `${rocket.getDeltaV().toFixed(0)} m/s`],
+        ["T+", this._formatTime(missionTime)],
+        ["ATMO", frame.atmoLayerName]
+      ];
+      rows.forEach(([label, value], i) => {
+        const ry = panelY + 22 + i * 22;
+        ctx.fillStyle = THEME.textDim;
+        ctx.fillText(label, panelX + 10, ry);
+        ctx.fillStyle = THEME.text;
+        ctx.fillText(value, panelX + 60, ry);
+      });
+      const fuelX = W - 200, fuelY = 16, fuelW = 184, fuelH = 100;
+      this._drawPanel(fuelX, fuelY, fuelW, fuelH);
+      ctx.fillStyle = THEME.textDim;
+      ctx.font = "11px Courier New";
+      ctx.textAlign = "left";
+      ctx.fillText("FUEL", fuelX + 10, fuelY + 20);
+      const tanks = rocket.parts.filter((p) => p.def.maxFuelMass > 0);
+      tanks.forEach((tank, i) => {
+        const by = fuelY + 35 + i * 18;
+        const bw = fuelW - 60;
+        const frac = tank.fuelRemaining / tank.def.maxFuelMass;
+        ctx.fillStyle = "rgba(255,255,255,0.08)";
+        ctx.fillRect(fuelX + 10, by, bw, 10);
+        const col = frac > 0.5 ? THEME.success : frac > 0.2 ? THEME.warning : THEME.danger;
+        ctx.fillStyle = col;
+        ctx.fillRect(fuelX + 10, by, bw * frac, 10);
+        ctx.fillStyle = THEME.textDim;
+        ctx.font = "9px Courier New";
+        ctx.fillText(`${(frac * 100).toFixed(0)}%`, fuelX + bw + 14, by + 9);
+      });
+      const stageW = 240, stageH = 44;
+      const stageX = (W - stageW) / 2, stageY = H - stageH - 16;
+      this._drawPanel(stageX, stageY, stageW, stageH);
+      ctx.textAlign = "center";
+      ctx.fillStyle = THEME.textDim;
+      ctx.font = "10px Courier New";
+      ctx.fillText("STAGE [SPACE]", W / 2, stageY + 14);
+      ctx.fillStyle = THEME.accent;
+      ctx.font = "bold 16px Courier New";
+      const totalStages = rocket.stages.length;
+      ctx.fillText(
+        totalStages > 0 ? `${currentStage + 1} / ${totalStages}` : "\u2014",
+        W / 2,
+        stageY + 34
+      );
+      const thrX = W - 60, thrY = H - 160;
+      ctx.fillStyle = THEME.textDim;
+      ctx.font = "10px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("THR", thrX, thrY - 8);
+      ctx.fillStyle = "rgba(255,255,255,0.08)";
+      ctx.fillRect(thrX - 12, thrY, 24, 120);
+      const thrCol = throttle > 0.7 ? THEME.danger : throttle > 0.3 ? THEME.warning : THEME.success;
+      ctx.fillStyle = thrCol;
+      ctx.fillRect(thrX - 12, thrY + 120 * (1 - throttle), 24, 120 * throttle);
+      ctx.fillStyle = THEME.text;
+      ctx.fillText(`${Math.round(throttle * 100)}%`, thrX, thrY + 134);
+      if (frame.heatingIntensity > 0.1) {
+        const heatAlpha = Math.min(frame.heatingIntensity, 1);
+        ctx.fillStyle = `rgba(255,80,0,${(heatAlpha * 0.25).toFixed(2)})`;
+        ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = `rgba(255,140,0,${heatAlpha.toFixed(2)})`;
+        ctx.font = "bold 12px Courier New";
+        ctx.textAlign = "center";
+        ctx.fillText(
+          frame.heatingIntensity > 0.7 ? "\u26A0 CRITICAL HEATING \u26A0" : "\u26A0 HEATING",
+          W / 2,
+          H / 2 - 20
+        );
+      }
+      if (missionTime < 10) {
+        const alpha = Math.max(0, 1 - missionTime / 8);
+        ctx.fillStyle = `rgba(100,160,200,${alpha})`;
+        ctx.font = "11px Courier New";
+        ctx.textAlign = "right";
+        const hints = ["Shift/Ctrl \u2014 Throttle", "Z \u2014 Full  X \u2014 Cut", "A/D \u2014 Rotate", "SPACE \u2014 Stage", "M \u2014 Map"];
+        hints.forEach((h, i) => ctx.fillText(h, W - 20, H - 20 - i * 16));
+      }
+    }
+    // ─── Helpers ─────────────────────────────────────────────────────────────
+    /** Convert a world-space position to screen-space pixels */
+    _worldToScreen(worldPos, cam) {
+      return {
+        x: this.W / 2 + (worldPos.x - cam.focus.x) / cam.metersPerPixel,
+        // Note: world +Y is up, canvas +Y is down → negate
+        y: this.H / 2 - (worldPos.y - cam.focus.y) / cam.metersPerPixel
+      };
+    }
+    /** Draw a dark panel with cyan border */
+    _drawPanel(x, y, w, h) {
+      const ctx = this.ctx;
+      ctx.fillStyle = "rgba(10,15,25,0.82)";
+      this._roundRect(x, y, w, h, 6);
+      ctx.fill();
+      ctx.strokeStyle = THEME.panelBorder;
+      ctx.lineWidth = 1;
+      this._roundRect(x, y, w, h, 6);
+      ctx.stroke();
+    }
+    /** Path a rounded rectangle (does not fill/stroke — caller does) */
+    _roundRect(x, y, w, h, r) {
+      const ctx = this.ctx;
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.arcTo(x + w, y, x + w, y + r, r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+      ctx.lineTo(x + r, y + h);
+      ctx.arcTo(x, y + h, x, y + h - r, r);
+      ctx.lineTo(x, y + r);
+      ctx.arcTo(x, y, x + r, y, r);
+      ctx.closePath();
+    }
+    _formatTime(seconds) {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor(seconds % 3600 / 60);
+      const s = Math.floor(seconds % 60);
+      return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    }
+  };
+
+  // src/UI.ts
+  function drawButton(ctx, btn, hover) {
+    const r = 6;
+    const { x, y, w, h, label, accent } = btn;
+    ctx.fillStyle = hover ? accent ? "rgba(0,180,220,0.35)" : "rgba(30,60,100,0.7)" : accent ? "rgba(0,120,160,0.25)" : "rgba(10,20,40,0.8)";
+    roundRect(ctx, x, y, w, h, r);
+    ctx.fill();
+    ctx.strokeStyle = hover ? THEME.accent : accent ? THEME.accentDim : THEME.panelBorder;
+    ctx.lineWidth = hover ? 1.5 : 1;
+    roundRect(ctx, x, y, w, h, r);
+    ctx.stroke();
+    ctx.fillStyle = hover ? THEME.accent : THEME.text;
+    ctx.font = `${accent ? "bold " : ""}13px Courier New`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, x + w / 2, y + h / 2);
+    ctx.textBaseline = "alphabetic";
+  }
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.arcTo(x + w, y, x + w, y + r, r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+    ctx.lineTo(x + r, y + h);
+    ctx.arcTo(x, y + h, x, y + h - r, r);
+    ctx.lineTo(x, y + r);
+    ctx.arcTo(x, y, x + r, y, r);
+    ctx.closePath();
+  }
+  function isHit(btn, mx, my) {
+    return mx >= btn.x && mx <= btn.x + btn.w && my >= btn.y && my <= btn.y + btn.h;
+  }
+  function makeParticles(W, H, n) {
+    return Array.from({ length: n }, () => ({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      vx: (Math.random() - 0.5) * 0.2,
+      vy: -Math.random() * 0.4 - 0.1,
+      r: Math.random() * 1.2 + 0.3,
+      alpha: Math.random() * 0.6 + 0.2
+    }));
+  }
+  var UI = class {
+    constructor(ctx, renderer) {
+      /** Tracks mouse position for button hover */
+      this.mouseX = 0;
+      this.mouseY = 0;
+      /** VAB: currently hovered palette part */
+      this.hoveredPaletteIdx = -1;
+      /** VAB: screen bounds of each rendered rocket part (for click-to-remove) */
+      this.vabPartBounds = [];
+      /** Staging: which stage column is hovered */
+      this.hoveredStageCol = -1;
+      /** Staging: dragged part (id) */
+      this.dragPartId = "";
+      this.dragStageTarget = -1;
+      // ─── VAB Screen ────────────────────────────────────────────────────────────
+      /** Width of the parts palette panel on the left */
+      this.VAB_PALETTE_W = 200;
+      this.ctx = ctx;
+      this.renderer = renderer;
+      this.W = ctx.canvas.width;
+      this.H = ctx.canvas.height;
+      this.particles = makeParticles(this.W, this.H, 80);
+    }
+    resize(w, h) {
+      this.W = w;
+      this.H = h;
+      this.particles = makeParticles(w, h, 80);
+    }
+    // ─── Main Menu ─────────────────────────────────────────────────────────────
+    renderMainMenu(time, onStart, onOptions, onExit) {
+      const ctx = this.ctx;
+      const { W, H } = this;
+      ctx.fillStyle = THEME.bg;
+      ctx.fillRect(0, 0, W, H);
+      this._drawMenuStars(time);
+      this._updateParticles();
+      this._drawParticles();
+      const titleY = H * 0.3;
+      ctx.save();
+      ctx.shadowColor = THEME.accent;
+      ctx.shadowBlur = 40;
+      ctx.fillStyle = THEME.accent;
+      ctx.font = `bold ${Math.round(W * 0.07)}px Courier New`;
+      ctx.textAlign = "center";
+      ctx.fillText("ANTIGRAVITY", W / 2, titleY);
+      ctx.restore();
+      ctx.fillStyle = THEME.textDim;
+      ctx.font = `${Math.round(W * 0.018)}px Courier New`;
+      ctx.textAlign = "center";
+      ctx.fillText("A Space Exploration Simulator", W / 2, titleY + 36);
+      ctx.fillStyle = "rgba(100,140,180,0.5)";
+      ctx.font = "11px Courier New";
+      ctx.fillText("v0.1.0", W / 2, titleY + 58);
+      const bw = 220, bh = 44;
+      const bx = W / 2 - bw / 2;
+      const gap = 16;
+      const by0 = H * 0.5;
+      const buttons = [
+        { x: bx, y: by0, w: bw, h: bh, label: "\u25B6  START GAME", action: onStart, accent: true },
+        { x: bx, y: by0 + bh + gap, w: bw, h: bh, label: "\u2699  OPTIONS", action: onOptions },
+        { x: bx, y: by0 + (bh + gap) * 2, w: bw, h: bh, label: "\u2715  EXIT", action: onExit }
+      ];
+      for (const btn of buttons) {
+        drawButton(ctx, btn, isHit(btn, this.mouseX, this.mouseY));
+      }
+      const earthY = H - 80;
+      const earthR = 60;
+      const earthGrad = ctx.createRadialGradient(W / 2, earthY + earthR, 0, W / 2, earthY + earthR, earthR);
+      earthGrad.addColorStop(0, "#4a9eff");
+      earthGrad.addColorStop(0.5, "#2266cc");
+      earthGrad.addColorStop(1, "#0d2244");
+      ctx.beginPath();
+      ctx.arc(W / 2, earthY + earthR, earthR, 0, Math.PI * 2);
+      ctx.fillStyle = earthGrad;
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(W / 2, earthY + earthR, earthR + 6, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(80,160,255,0.3)";
+      ctx.lineWidth = 6;
+      ctx.stroke();
+    }
+    /** Handle click on main menu. Returns true if a button was hit. */
+    handleMainMenuClick(mx, my, onStart, onOptions, onExit) {
+      const { W, H } = this;
+      const bw = 220, bh = 44;
+      const bx = W / 2 - bw / 2;
+      const gap = 16;
+      const by0 = H * 0.5;
+      const buttons = [
+        { x: bx, y: by0, w: bw, h: bh, label: "\u25B6  START GAME", action: onStart, accent: true },
+        { x: bx, y: by0 + bh + gap, w: bw, h: bh, label: "\u2699  OPTIONS", action: onOptions },
+        { x: bx, y: by0 + (bh + gap) * 2, w: bw, h: bh, label: "\u2715  EXIT", action: onExit }
+      ];
+      for (const btn of buttons) {
+        if (isHit(btn, mx, my)) {
+          btn.action();
+          return true;
+        }
+      }
+      return false;
+    }
+    // ─── Options Screen ────────────────────────────────────────────────────────
+    renderOptions(onBack) {
+      const ctx = this.ctx;
+      const { W, H } = this;
+      ctx.fillStyle = THEME.bg;
+      ctx.fillRect(0, 0, W, H);
+      this._drawMenuStars(0);
+      const pw = 480, ph = 340;
+      const px = (W - pw) / 2, py = (H - ph) / 2;
+      ctx.fillStyle = "rgba(10,15,25,0.92)";
+      roundRect(ctx, px, py, pw, ph, 10);
+      ctx.fill();
+      ctx.strokeStyle = THEME.panelBorder;
+      ctx.lineWidth = 1;
+      roundRect(ctx, px, py, pw, ph, 10);
+      ctx.stroke();
+      ctx.fillStyle = THEME.accent;
+      ctx.font = "bold 22px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("OPTIONS", W / 2, py + 40);
+      ctx.fillStyle = THEME.textDim;
+      ctx.font = "13px Courier New";
+      ctx.textAlign = "left";
+      const options = [
+        { label: "Master Volume", value: "100%" },
+        { label: "Graphics Quality", value: "High" },
+        { label: "Show Trajectory", value: "On" },
+        { label: "Physics Steps/s", value: "60" }
+      ];
+      options.forEach((opt, i) => {
+        const oy = py + 80 + i * 48;
+        ctx.fillStyle = THEME.textDim;
+        ctx.fillText(opt.label, px + 30, oy);
+        ctx.fillStyle = "rgba(255,255,255,0.06)";
+        roundRect(ctx, px + 220, oy - 14, 180, 20, 4);
+        ctx.fill();
+        ctx.strokeStyle = THEME.panelBorder;
+        ctx.lineWidth = 1;
+        roundRect(ctx, px + 220, oy - 14, 180, 20, 4);
+        ctx.stroke();
+        ctx.fillStyle = THEME.accent;
+        ctx.font = "12px Courier New";
+        ctx.textAlign = "right";
+        ctx.fillText(opt.value, px + pw - 30, oy);
+        ctx.textAlign = "left";
+        ctx.font = "13px Courier New";
+      });
+      ctx.fillStyle = "rgba(100,140,180,0.5)";
+      ctx.font = "11px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("(Options are cosmetic stubs \u2014 full settings in a future update)", W / 2, py + ph - 50);
+      const backBtn = { x: W / 2 - 90, y: py + ph - 58, w: 180, h: 36, label: "\u2190 BACK", action: onBack };
+      drawButton(ctx, backBtn, isHit(backBtn, this.mouseX, this.mouseY));
+    }
+    handleOptionsClick(mx, my, onBack) {
+      const { H } = this;
+      const ph = 340;
+      const py = (H - ph) / 2;
+      const backBtn = { x: this.W / 2 - 90, y: py + ph - 58, w: 180, h: 36, label: "\u2190 BACK", action: onBack };
+      if (isHit(backBtn, mx, my)) {
+        onBack();
+        return true;
+      }
+      return false;
+    }
+    renderVAB(rocket, onLaunch, onStaging, onBack) {
+      const ctx = this.ctx;
+      const { W, H } = this;
+      ctx.fillStyle = THEME.panelBg;
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = "rgba(8,12,20,0.95)";
+      ctx.fillRect(0, 0, this.VAB_PALETTE_W, H);
+      ctx.strokeStyle = THEME.panelBorder;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(this.VAB_PALETTE_W, 0);
+      ctx.lineTo(this.VAB_PALETTE_W, H);
+      ctx.stroke();
+      ctx.fillStyle = THEME.accent;
+      ctx.font = "bold 13px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("PARTS", this.VAB_PALETTE_W / 2, 28);
+      VAB_PALETTE.forEach((type, i) => {
+        const def = PART_CATALOGUE[type];
+        const cy = 55 + i * 70;
+        const hovered = this.hoveredPaletteIdx === i;
+        ctx.fillStyle = hovered ? "rgba(0,120,160,0.35)" : "rgba(15,25,40,0.8)";
+        roundRect(ctx, 8, cy, this.VAB_PALETTE_W - 16, 62, 5);
+        ctx.fill();
+        ctx.strokeStyle = hovered ? THEME.accent : THEME.panelBorder;
+        ctx.lineWidth = 1;
+        roundRect(ctx, 8, cy, this.VAB_PALETTE_W - 16, 62, 5);
+        ctx.stroke();
+        ctx.fillStyle = def.color;
+        roundRect(ctx, 14, cy + 10, 22, 42, 3);
+        ctx.fill();
+        ctx.fillStyle = hovered ? THEME.accent : THEME.text;
+        ctx.font = "10px Courier New";
+        ctx.textAlign = "left";
+        ctx.fillText(def.name.length > 16 ? def.name.slice(0, 16) + "\u2026" : def.name, 42, cy + 22);
+        ctx.fillStyle = THEME.textDim;
+        ctx.font = "9px Courier New";
+        ctx.fillText(`${(def.dryMass / 1e3).toFixed(1)}t`, 42, cy + 36);
+        if (def.maxThrust > 0) {
+          ctx.fillText(`${(def.maxThrust / 1e3).toFixed(0)}kN`, 80, cy + 36);
+        }
+        if (def.maxFuelMass > 0) {
+          ctx.fillText(`\u26FD${(def.maxFuelMass / 1e3).toFixed(1)}t`, 42, cy + 48);
+        }
+      });
+      ctx.fillStyle = THEME.textDim;
+      ctx.font = "9px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("Click to add to rocket", this.VAB_PALETTE_W / 2, H - 16);
+      const buildX = this.VAB_PALETTE_W;
+      const buildW = W - buildX - 200;
+      ctx.strokeStyle = "rgba(100,120,150,0.3)";
+      ctx.setLineDash([8, 6]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(buildX, H - 80);
+      ctx.lineTo(buildX + buildW, H - 80);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = THEME.textDim;
+      ctx.font = "10px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("LAUNCHPAD", buildX + buildW / 2, H - 64);
+      if (rocket.parts.length > 0) {
+        this.vabPartBounds = this.renderer.renderVABRocket(rocket, buildX + buildW / 2, H - 80);
+      } else {
+        this.vabPartBounds = [];
+        ctx.fillStyle = THEME.textDim;
+        ctx.font = "13px Courier New";
+        ctx.textAlign = "center";
+        ctx.fillText("\u2190 Click a part to begin building", buildX + buildW / 2, H / 2);
+      }
+      if (rocket.parts.length > 0) {
+        ctx.fillStyle = THEME.textDim;
+        ctx.font = "9px Courier New";
+        ctx.textAlign = "center";
+        ctx.fillText("Click part to remove it", buildX + buildW / 2, H - 48);
+      }
+      const infoX = W - 196;
+      ctx.fillStyle = "rgba(8,12,20,0.95)";
+      ctx.fillRect(infoX, 0, 196, H);
+      ctx.strokeStyle = THEME.panelBorder;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(infoX, 0);
+      ctx.lineTo(infoX, H);
+      ctx.stroke();
+      ctx.fillStyle = THEME.accent;
+      ctx.font = "bold 12px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("VEHICLE STATS", infoX + 98, 28);
+      const stats = [
+        ["Parts", `${rocket.parts.length}`],
+        ["Dry Mass", `${(rocket.parts.reduce((s, p) => s + p.def.dryMass, 0) / 1e3).toFixed(2)} t`],
+        ["Wet Mass", `${(rocket.getTotalMass() / 1e3).toFixed(2)} t`],
+        ["Fuel", `${(rocket.totalFuelCapacity / 1e3).toFixed(1)} t`],
+        ["Thrust", `${(rocket.parts.filter((p) => p.def.type === 3 /* ENGINE */).reduce((s, p) => s + p.def.maxThrust, 0) / 1e3).toFixed(0)} kN`],
+        ["\u0394V", `${rocket.getDeltaV().toFixed(0)} m/s`]
+      ];
+      stats.forEach(([k, v], i) => {
+        const ry = 55 + i * 28;
+        ctx.fillStyle = THEME.textDim;
+        ctx.font = "10px Courier New";
+        ctx.textAlign = "left";
+        ctx.fillText(k, infoX + 12, ry);
+        ctx.fillStyle = THEME.text;
+        ctx.textAlign = "right";
+        ctx.fillText(v, infoX + 184, ry);
+      });
+      const totalThrust = rocket.parts.filter((p) => p.def.type === 3 /* ENGINE */).reduce((s, p) => s + p.def.maxThrust, 0);
+      const twr = rocket.getTotalMass() > 0 ? totalThrust / (rocket.getTotalMass() * 9.81) : 0;
+      const twrY = 55 + stats.length * 28;
+      ctx.fillStyle = THEME.textDim;
+      ctx.font = "10px Courier New";
+      ctx.textAlign = "left";
+      ctx.fillText("TWR", infoX + 12, twrY);
+      ctx.fillStyle = twr > 1.2 ? THEME.success : twr > 1 ? THEME.warning : THEME.danger;
+      ctx.textAlign = "right";
+      ctx.fillText(twr.toFixed(2), infoX + 184, twrY);
+      ctx.strokeStyle = THEME.panelBorder;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(infoX + 10, H - 170);
+      ctx.lineTo(infoX + 186, H - 170);
+      ctx.stroke();
+      const bw = 170, bh = 36, bx2 = infoX + 13;
+      const launchBtn = { x: bx2, y: H - 160, w: bw, h: bh, label: "\u{1F680} LAUNCH", action: onLaunch, accent: true };
+      const stagingBtn = { x: bx2, y: H - 114, w: bw, h: bh, label: "\u{1F522} STAGING", action: onStaging };
+      const backBtn = { x: bx2, y: H - 68, w: bw, h: bh, label: "\u2190 MAIN MENU", action: onBack };
+      drawButton(ctx, launchBtn, isHit(launchBtn, this.mouseX, this.mouseY));
+      drawButton(ctx, stagingBtn, isHit(stagingBtn, this.mouseX, this.mouseY));
+      drawButton(ctx, backBtn, isHit(backBtn, this.mouseX, this.mouseY));
+    }
+    handleVABClick(mx, my, rocket, onLaunch, onStaging, onBack) {
+      const { W, H } = this;
+      const bw = 170, bh = 36;
+      const infoX = W - 196;
+      const bx2 = infoX + 13;
+      const launchBtn = { x: bx2, y: H - 160, w: bw, h: bh, label: "", action: onLaunch };
+      const stagingBtn = { x: bx2, y: H - 114, w: bw, h: bh, label: "", action: onStaging };
+      const backBtn = { x: bx2, y: H - 68, w: bw, h: bh, label: "", action: onBack };
+      for (const btn of [launchBtn, stagingBtn, backBtn]) {
+        if (isHit(btn, mx, my)) {
+          btn.action();
+          return true;
+        }
+      }
+      if (mx < this.VAB_PALETTE_W) {
+        VAB_PALETTE.forEach((type, i) => {
+          const cy = 55 + i * 70;
+          if (my >= cy && my <= cy + 62) {
+            rocket.addPartOnTop(type);
+          }
+        });
+        return true;
+      }
+      if (mx < W - 196) {
+        for (const bounds of this.vabPartBounds) {
+          if (mx >= bounds.x && mx <= bounds.x + bounds.w && my >= bounds.y && my <= bounds.y + bounds.h) {
+            rocket.removePartById(bounds.id);
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+    handleVABMouseMove(mx, my) {
+      this.mouseX = mx;
+      this.mouseY = my;
+      if (mx < this.VAB_PALETTE_W) {
+        this.hoveredPaletteIdx = -1;
+        VAB_PALETTE.forEach((_, i) => {
+          const cy = 55 + i * 70;
+          if (my >= cy && my <= cy + 62)
+            this.hoveredPaletteIdx = i;
+        });
+      } else {
+        this.hoveredPaletteIdx = -1;
+      }
+    }
+    // ─── Staging Screen ────────────────────────────────────────────────────────
+    renderStaging(rocket, onConfirm, onBack) {
+      const ctx = this.ctx;
+      const { W, H } = this;
+      ctx.fillStyle = THEME.bg;
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = THEME.accent;
+      ctx.font = "bold 20px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("STAGING", W / 2, 40);
+      ctx.fillStyle = THEME.textDim;
+      ctx.font = "11px Courier New";
+      ctx.fillText("Parts fire in order from Stage 0 (first Space press) upward.", W / 2, 62);
+      const autoBtn = { x: W / 2 - 80, y: 75, w: 160, h: 28, label: "\u26A1 AUTO-STAGE", action: () => {
+        rocket.autoStage();
+      } };
+      drawButton(ctx, autoBtn, isHit(autoBtn, this.mouseX, this.mouseY));
+      const stageCount = Math.max(4, rocket.stages.length + 1);
+      const colW = Math.min(180, (W - 40) / stageCount);
+      for (let si = 0; si < stageCount; si++) {
+        const cx = 20 + si * (colW + 8);
+        const cy = 120;
+        const colH = H - 200;
+        const hovered = this.hoveredStageCol === si;
+        ctx.fillStyle = hovered ? "rgba(0,80,120,0.4)" : "rgba(10,20,35,0.7)";
+        roundRect(ctx, cx, cy, colW, colH, 6);
+        ctx.fill();
+        ctx.strokeStyle = hovered ? THEME.accent : THEME.panelBorder;
+        ctx.lineWidth = 1;
+        roundRect(ctx, cx, cy, colW, colH, 6);
+        ctx.stroke();
+        ctx.fillStyle = THEME.accent;
+        ctx.font = "bold 12px Courier New";
+        ctx.textAlign = "center";
+        ctx.fillText(`STAGE ${si}`, cx + colW / 2, cy + 20);
+        const stage = rocket.stages.find((s) => s.stageIndex === si);
+        if (stage) {
+          stage.partIds.forEach((pid, pi) => {
+            const part = rocket.parts.find((p) => p.id === pid);
+            if (!part)
+              return;
+            const py2 = cy + 34 + pi * 38;
+            ctx.fillStyle = part.def.color;
+            roundRect(ctx, cx + 8, py2, colW - 16, 30, 4);
+            ctx.fill();
+            ctx.fillStyle = "rgba(255,255,255,0.8)";
+            ctx.font = "9px Courier New";
+            ctx.textAlign = "center";
+            ctx.fillText(part.def.name.slice(0, 14), cx + colW / 2, py2 + 12);
+            ctx.fillStyle = THEME.textDim;
+            ctx.font = "8px Courier New";
+            ctx.fillText(part.def.type === 3 /* ENGINE */ ? "ENGINE" : "DECOUPLE", cx + colW / 2, py2 + 24);
+          });
+        }
+      }
+      const unassigned = rocket.parts.filter(
+        (p) => p.stageIndex === -1 && (p.def.type === 3 /* ENGINE */ || p.def.type === 4 /* DECOUPLER */)
+      );
+      if (unassigned.length > 0) {
+        ctx.fillStyle = THEME.textDim;
+        ctx.font = "11px Courier New";
+        ctx.textAlign = "left";
+        ctx.fillText("Unassigned:", 20, H - 80);
+        unassigned.forEach((p, i) => {
+          ctx.fillStyle = p.def.color;
+          roundRect(ctx, 20 + i * 80, H - 70, 74, 28, 3);
+          ctx.fill();
+          ctx.fillStyle = THEME.text;
+          ctx.font = "9px Courier New";
+          ctx.textAlign = "center";
+          ctx.fillText(p.def.name.slice(0, 10), 20 + i * 80 + 37, H - 52);
+        });
+      }
+      const confirmBtn = { x: W - 220, y: H - 52, w: 180, h: 36, label: "\u2714 CONFIRM", action: onConfirm, accent: true };
+      const backBtn2 = { x: 20, y: H - 52, w: 120, h: 36, label: "\u2190 BACK", action: onBack };
+      drawButton(ctx, confirmBtn, isHit(confirmBtn, this.mouseX, this.mouseY));
+      drawButton(ctx, backBtn2, isHit(backBtn2, this.mouseX, this.mouseY));
+    }
+    handleStagingClick(mx, my, rocket, onConfirm, onBack) {
+      const { W, H } = this;
+      const autoBtn = { x: W / 2 - 80, y: 75, w: 160, h: 28, label: "", action: () => rocket.autoStage() };
+      if (isHit(autoBtn, mx, my)) {
+        rocket.autoStage();
+        return true;
+      }
+      const confirmBtn = { x: W - 220, y: H - 52, w: 180, h: 36, label: "", action: onConfirm };
+      const backBtn = { x: 20, y: H - 52, w: 120, h: 36, label: "", action: onBack };
+      for (const btn of [confirmBtn, backBtn]) {
+        if (isHit(btn, mx, my)) {
+          btn.action();
+          return true;
+        }
+      }
+      const stageCount = Math.max(4, rocket.stages.length + 1);
+      const colW = Math.min(180, (W - 40) / stageCount);
+      for (let si = 0; si < stageCount; si++) {
+        const cx = 20 + si * (colW + 8);
+        const cy = 120;
+        const colH = H - 200;
+        if (mx >= cx && mx <= cx + colW && my >= cy && my <= cy + colH) {
+          const stage = rocket.stages.find((s) => s.stageIndex === si);
+          if (stage) {
+            stage.partIds.forEach((pid, pi) => {
+              const py2 = cy + 34 + pi * 38;
+              if (my >= py2 && my <= py2 + 30) {
+                rocket.assignStage(pid, (si + 1) % stageCount);
+              }
+            });
+          }
+          return true;
+        }
+      }
+      return false;
+    }
+    // ─── Pause / Message Overlay ───────────────────────────────────────────────
+    renderMessage(title, body, btnLabel, onBtn) {
+      const ctx = this.ctx;
+      const { W, H } = this;
+      ctx.fillStyle = "rgba(0,0,0,0.72)";
+      ctx.fillRect(0, 0, W, H);
+      const pw = 440, ph = 200;
+      const px = (W - pw) / 2, py = (H - ph) / 2;
+      ctx.fillStyle = THEME.panelBg;
+      roundRect(ctx, px, py, pw, ph, 10);
+      ctx.fill();
+      ctx.strokeStyle = THEME.panelBorder;
+      ctx.lineWidth = 1;
+      roundRect(ctx, px, py, pw, ph, 10);
+      ctx.stroke();
+      ctx.fillStyle = THEME.accent;
+      ctx.font = "bold 18px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText(title, W / 2, py + 42);
+      ctx.fillStyle = THEME.text;
+      ctx.font = "13px Courier New";
+      ctx.fillText(body, W / 2, py + 80);
+      const btn = { x: W / 2 - 80, y: py + 120, w: 160, h: 40, label: btnLabel, action: onBtn };
+      drawButton(ctx, btn, isHit(btn, this.mouseX, this.mouseY));
+    }
+    handleMessageClick(mx, my, onBtn) {
+      const { W, H } = this;
+      const ph = 200;
+      const py = (H - ph) / 2;
+      const btn = { x: W / 2 - 80, y: py + 120, w: 160, h: 40, label: "", action: onBtn };
+      if (isHit(btn, mx, my)) {
+        onBtn();
+        return true;
+      }
+      return false;
+    }
+    // ─── Private Helpers ──────────────────────────────────────────────────────
+    _drawMenuStars(time) {
+      const ctx = this.ctx;
+      const { W, H } = this;
+      for (let i = 0; i < 200; i++) {
+        const seed = i * 7 + 13;
+        const sx = (seed * 1664525 + 1013904223 & 16777215) % W;
+        const sy = (seed * 22695477 + 1 & 16777215) % H;
+        const r = (seed * 6364136223846793e3 & 255) / 255 * 1.2 + 0.2;
+        const tw = Math.sin(time * 0.8 + i) * 0.15;
+        ctx.fillStyle = `rgba(200,220,255,${0.35 + tw})`;
+        ctx.beginPath();
+        ctx.arc(sx, sy, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    _updateParticles() {
+      const { W, H } = this;
+      for (const p of this.particles) {
+        p.x += p.vx;
+        p.y += p.vy;
+        if (p.y < -5) {
+          p.y = H + 5;
+          p.x = Math.random() * W;
+        }
+      }
+    }
+    _drawParticles() {
+      const ctx = this.ctx;
+      for (const p of this.particles) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(100,180,255,${p.alpha * 0.4})`;
+        ctx.fill();
+      }
+    }
+  };
+
+  // src/MapView.ts
+  function computeOrbitalElements(pos, vel) {
+    const r = vec2.length(pos);
+    const v = vec2.length(vel);
+    const energy = v * v / 2 - MU_EARTH / r;
+    if (energy >= 0) {
+      return { sma: Infinity, ecc: 1, periAlt: -1, apoAlt: Infinity, period: Infinity };
+    }
+    const sma = -MU_EARTH / (2 * energy);
+    const h = pos.x * vel.y - pos.y * vel.x;
+    const ecc2 = 1 - h * h / (MU_EARTH * sma);
+    const ecc = Math.sqrt(Math.max(0, ecc2));
+    const periR = sma * (1 - ecc);
+    const apoR = sma * (1 + ecc);
+    const period = 2 * Math.PI * Math.sqrt(sma ** 3 / MU_EARTH);
+    return {
+      sma,
+      ecc,
+      periAlt: periR - R_EARTH,
+      apoAlt: apoR - R_EARTH,
+      period
+    };
+  }
+  var MapView = class {
+    constructor(ctx, atmo) {
+      /** Base screen pixels per metre (Earth radius fills H*0.20) */
+      this.mpp = 1;
+      /** User zoom multiplier (scroll wheel) */
+      this.userScale = 1;
+      /** Pan offset in screen pixels */
+      this.panX = 0;
+      this.panY = 0;
+      /** Drag state */
+      this.isDragging = false;
+      this.dragStartX = 0;
+      this.dragStartY = 0;
+      /** Maneuver nodes (future feature stub) */
+      this.maneuverNodes = [];
+      /** Cached trajectory path (recomputed every ~60 frames) */
+      this.cachedPath = [];
+      this.pathAge = 0;
+      this.ctx = ctx;
+      this.atmo = atmo;
+      this.W = ctx.canvas.width;
+      this.H = ctx.canvas.height;
+    }
+    resize(w, h) {
+      this.W = w;
+      this.H = h;
+    }
+    // ─── Full Map Render ──────────────────────────────────────────────────────
+    /**
+     * Render the full map overlay on top of the existing canvas content.
+     * @param rocket  Current rocket state
+     * @param time    Elapsed time in seconds (for animations)
+     * @param onBack  Callback when Back button is clicked
+     */
+    render(rocket, time, _onBack) {
+      const ctx = this.ctx;
+      const { W, H } = this;
+      ctx.fillStyle = "rgba(4,8,16,0.90)";
+      ctx.fillRect(0, 0, W, H);
+      this.mpp = R_EARTH / (H * 0.2);
+      this._drawGrid();
+      this._drawEarth();
+      this.pathAge++;
+      if (this.pathAge > 60 || this.cachedPath.length === 0) {
+        this.cachedPath = this._predictTrajectory(rocket);
+        this.pathAge = 0;
+      }
+      this._drawTrajectory(rocket);
+      this._drawRocketMarker(rocket, time);
+      this._drawManeuverNodes();
+      this._drawOrbitalInfo(rocket);
+      ctx.fillStyle = THEME.accent;
+      ctx.font = "bold 14px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("MAP VIEW", W / 2, 28);
+      ctx.fillStyle = THEME.textDim;
+      ctx.font = "11px Courier New";
+      ctx.fillText("M \u2014 return to flight  |  Drag \u2014 pan  |  Scroll \u2014 zoom", W / 2, 46);
+    }
+    /** Handle click — returns true if back was triggered (not used; M key toggles) */
+    handleClick(_mx, _my) {
+      return false;
+    }
+    // ─── Trajectory Prediction ───────────────────────────────────────────────
+    /**
+     * Numerically integrate the rocket forward in time using gravity only
+     * (no drag, no thrust assumed during prediction).
+     *
+     * We use a simple Euler integrator with 20-second steps.
+     * For a real Verlet integrator the error would be smaller, but Euler
+     * is sufficient for the visual dotted path.
+     *
+     * @returns Array of world-space positions forming the trajectory
+     */
+    _predictTrajectory(rocket) {
+      const steps = 300;
+      const dt = 20;
+      const path = [];
+      let pos = vec2.clone(rocket.body.pos);
+      let vel = vec2.clone(rocket.body.vel);
+      for (let i = 0; i < steps; i++) {
+        path.push(vec2.clone(pos));
+        const r = vec2.length(pos);
+        if (r < R_EARTH)
+          break;
+        const gMag = MU_EARTH / (r * r);
+        const gDir = vec2.scale(pos, -1 / r);
+        const ax = gDir.x * gMag;
+        const ay = gDir.y * gMag;
+        vel.x += ax * dt;
+        vel.y += ay * dt;
+        pos.x += vel.x * dt;
+        pos.y += vel.y * dt;
+      }
+      return path;
+    }
+    // ─── Drawing Helpers ────────────────────────────────────────────────────
+    /** Effective metres-per-pixel (base scale divided by user zoom) */
+    get eMpp() {
+      return this.mpp / this.userScale;
+    }
+    /** World position → screen position (Y axis flipped: world +Y = screen −Y) */
+    _w2s(world) {
+      return {
+        x: this.W / 2 + world.x / this.eMpp + this.panX,
+        y: this.H / 2 - world.y / this.eMpp + this.panY
+      };
+    }
+    _drawEarth() {
+      const ctx = this.ctx;
+      const centre = this._w2s({ x: 0, y: 0 });
+      const earthR = R_EARTH / this.eMpp;
+      const atmoR = (R_EARTH + 7e4) / this.eMpp;
+      const atmoGrad = ctx.createRadialGradient(centre.x, centre.y, earthR * 0.95, centre.x, centre.y, atmoR);
+      atmoGrad.addColorStop(0, "rgba(80,160,255,0.4)");
+      atmoGrad.addColorStop(1, "rgba(0,60,120,0)");
+      ctx.beginPath();
+      ctx.arc(centre.x, centre.y, atmoR, 0, Math.PI * 2);
+      ctx.fillStyle = atmoGrad;
+      ctx.fill();
+      const earthGrad = ctx.createRadialGradient(
+        centre.x - earthR * 0.3,
+        centre.y - earthR * 0.3,
+        earthR * 0.05,
+        centre.x,
+        centre.y,
+        earthR
+      );
+      earthGrad.addColorStop(0, "#4a9eff");
+      earthGrad.addColorStop(0.45, "#1d5ea8");
+      earthGrad.addColorStop(0.8, "#164d30");
+      earthGrad.addColorStop(1, "#0d2244");
+      ctx.beginPath();
+      ctx.arc(centre.x, centre.y, earthR, 0, Math.PI * 2);
+      ctx.fillStyle = earthGrad;
+      ctx.fill();
+    }
+    _drawGrid() {
+      const ctx = this.ctx;
+      const centre = this._w2s({ x: 0, y: 0 });
+      const altitudes = [1e5, 5e5, 1e6, 3e6, 1e7];
+      ctx.setLineDash([4, 8]);
+      ctx.lineWidth = 0.5;
+      ctx.textAlign = "left";
+      ctx.font = "10px Courier New";
+      for (const alt of altitudes) {
+        const r = (R_EARTH + alt) / this.eMpp;
+        ctx.beginPath();
+        ctx.arc(centre.x, centre.y, r, 0, Math.PI * 2);
+        ctx.strokeStyle = "rgba(30,80,120,0.5)";
+        ctx.stroke();
+        const labelX = centre.x + r + 4;
+        const labelStr = alt >= 1e6 ? `${(alt / 1e6).toFixed(0)} Mm` : `${(alt / 1e3).toFixed(0)} km`;
+        ctx.fillStyle = "rgba(60,110,160,0.8)";
+        ctx.fillText(labelStr, labelX, centre.y - 4);
+      }
+      ctx.setLineDash([]);
+    }
+    _drawTrajectory(_rocket) {
+      const ctx = this.ctx;
+      const path = this.cachedPath;
+      if (path.length < 2)
+        return;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 6]);
+      for (let i = 1; i < path.length; i++) {
+        const s0 = this._w2s(path[i - 1]);
+        const s1 = this._w2s(path[i]);
+        const alt = vec2.length(path[i]) - R_EARTH;
+        const inAtmo = this.atmo.isInAtmosphere(alt);
+        ctx.strokeStyle = inAtmo ? "rgba(255,140,40,0.55)" : "rgba(0,200,255,0.45)";
+        ctx.beginPath();
+        ctx.moveTo(s0.x, s0.y);
+        ctx.lineTo(s1.x, s1.y);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      let minR = Infinity, maxR = -Infinity;
+      let minPos = path[0], maxPos = path[0];
+      for (const p of path) {
+        const r = vec2.length(p);
+        if (r < minR) {
+          minR = r;
+          minPos = p;
+        }
+        if (r > maxR) {
+          maxR = r;
+          maxPos = p;
+        }
+      }
+      this._drawOrbMarker(minPos, "Pe", THEME.warning);
+      this._drawOrbMarker(maxPos, "Ap", THEME.accent);
+    }
+    _drawOrbMarker(worldPos, label, color) {
+      const ctx = this.ctx;
+      const sp = this._w2s(worldPos);
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.fillStyle = color;
+      ctx.font = "bold 11px Courier New";
+      ctx.textAlign = "left";
+      const alt = vec2.length(worldPos) - R_EARTH;
+      const altStr = alt < 1e6 ? `${(alt / 1e3).toFixed(1)} km` : `${(alt / 1e6).toFixed(3)} Mm`;
+      ctx.fillText(`${label}: ${altStr}`, sp.x + 8, sp.y - 4);
+    }
+    _drawRocketMarker(rocket, time) {
+      const ctx = this.ctx;
+      const sp = this._w2s(rocket.body.pos);
+      const pulse = 0.5 + 0.5 * Math.sin(time * 4);
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, 6 + pulse * 4, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(0,212,255,${0.3 + pulse * 0.4})`;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, 4, 0, Math.PI * 2);
+      ctx.fillStyle = THEME.accent;
+      ctx.fill();
+      const velScaled = vec2.scale(rocket.body.vel, 1e-3 / this.eMpp);
+      if (vec2.length(velScaled) > 2) {
+        const velEnd = { x: sp.x + velScaled.x, y: sp.y - velScaled.y };
+        ctx.beginPath();
+        ctx.moveTo(sp.x, sp.y);
+        ctx.lineTo(velEnd.x, velEnd.y);
+        ctx.strokeStyle = THEME.success;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+      ctx.fillStyle = THEME.text;
+      ctx.font = "10px Courier New";
+      ctx.textAlign = "left";
+      ctx.fillText("\u25B2 Rocket", sp.x + 8, sp.y + 4);
+    }
+    _drawManeuverNodes() {
+      const ctx = this.ctx;
+      for (const node of this.maneuverNodes) {
+        if (node.executed)
+          continue;
+        ctx.fillStyle = THEME.warning;
+        ctx.font = "bold 12px Courier New";
+        ctx.textAlign = "center";
+        ctx.fillText("\u2B21 Maneuver Node (stub)", this.W / 2, this.H - 100);
+        break;
+      }
+    }
+    _drawOrbitalInfo(rocket) {
+      const ctx = this.ctx;
+      const { W } = this;
+      const orb = computeOrbitalElements(rocket.body.pos, rocket.body.vel);
+      const rows = [
+        ["Pe", orb.periAlt < 0 ? "SUBORBITAL" : orb.periAlt < 1e6 ? `${(orb.periAlt / 1e3).toFixed(1)} km` : `${(orb.periAlt / 1e6).toFixed(3)} Mm`],
+        ["Ap", orb.apoAlt === Infinity ? "ESCAPE" : orb.apoAlt < 1e6 ? `${(orb.apoAlt / 1e3).toFixed(1)} km` : `${(orb.apoAlt / 1e6).toFixed(3)} Mm`],
+        ["Ecc", orb.ecc.toFixed(4)],
+        ["Per", orb.period === Infinity ? "\u221E" : this._fmtTime(orb.period)],
+        ["SMA", orb.sma === Infinity ? "\u221E" : `${(orb.sma / 1e3).toFixed(0)} km`]
+      ];
+      const pw = 200, ph = rows.length * 22 + 36;
+      const px = W - pw - 16, py = 60;
+      ctx.fillStyle = "rgba(8,14,24,0.88)";
+      this._roundRect(px, py, pw, ph, 6);
+      ctx.fill();
+      ctx.strokeStyle = THEME.panelBorder;
+      ctx.lineWidth = 1;
+      this._roundRect(px, py, pw, ph, 6);
+      ctx.stroke();
+      ctx.fillStyle = THEME.accent;
+      ctx.font = "bold 11px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("ORBITAL DATA", px + pw / 2, py + 18);
+      rows.forEach(([k, v], i) => {
+        const ry = py + 36 + i * 22;
+        ctx.fillStyle = THEME.textDim;
+        ctx.font = "10px Courier New";
+        ctx.textAlign = "left";
+        ctx.fillText(k, px + 10, ry);
+        ctx.fillStyle = THEME.text;
+        ctx.textAlign = "right";
+        ctx.fillText(v, px + pw - 10, ry);
+      });
+    }
+    _roundRect(x, y, w, h, r) {
+      const ctx = this.ctx;
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.arcTo(x + w, y, x + w, y + r, r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+      ctx.lineTo(x + r, y + h);
+      ctx.arcTo(x, y + h, x, y + h - r, r);
+      ctx.lineTo(x, y + r);
+      ctx.arcTo(x, y, x + r, y, r);
+      ctx.closePath();
+    }
+    _fmtTime(seconds) {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor(seconds % 3600 / 60);
+      const s = Math.floor(seconds % 60);
+      return `${h}h ${m}m ${s}s`;
+    }
+    // ─── Pan / Zoom Input ────────────────────────────────────────────────────
+    handleMouseDown(mx, my) {
+      this.isDragging = true;
+      this.dragStartX = mx - this.panX;
+      this.dragStartY = my - this.panY;
+    }
+    handleMouseMove(mx, my) {
+      if (!this.isDragging)
+        return;
+      this.panX = mx - this.dragStartX;
+      this.panY = my - this.dragStartY;
+    }
+    handleMouseUp() {
+      this.isDragging = false;
+    }
+    handleWheel(e) {
+      const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+      this.userScale = Math.max(0.25, Math.min(80, this.userScale * factor));
+    }
+    /** Reset pan/zoom to default (called when map is opened) */
+    resetView() {
+      this.panX = 0;
+      this.panY = 0;
+      this.userScale = 1;
+    }
+    /** Add a maneuver node (for future use) */
+    addManeuverNode(node) {
+      this.maneuverNodes.push(node);
+    }
+    /** Clear all maneuver nodes */
+    clearManeuverNodes() {
+      this.maneuverNodes = [];
+    }
+  };
+
+  // src/Game.ts
+  var PHYSICS_DT = 1 / 60;
+  var MAX_PHYSICS_STEPS = 4;
+  var THROTTLE_RATE = 0.5;
+  var Game = class {
+    constructor(canvas2) {
+      // ── State ──────────────────────────────────────────────────────────────────
+      this.screen = 0 /* MAIN_MENU */;
+      this.isMapOpen = false;
+      /** Player throttle 0–1 */
+      this.throttle = 0;
+      /** Physics accumulator (seconds) */
+      this.accumulator = 0;
+      /** Timestamp of last rAF call */
+      this.lastTime = -1;
+      /** Total wall-clock time (for animations) */
+      this.wallTime = 0;
+      /** Input state flags */
+      this.input = {
+        throttleUp: false,
+        throttleDown: false,
+        rotateLeft: false,
+        rotateRight: false,
+        stage: false,
+        toggleMap: false,
+        escape: false
+      };
+      /** One-shot flags (reset each frame) */
+      this.stagePressed = false;
+      this.mapPressed = false;
+      this.escPressed = false;
+      // ── Message overlay state ──────────────────────────────────────────────────
+      this.showMessage = false;
+      this.messageTitle = "";
+      this.messageBody = "";
+      this.messageBtn = "";
+      this.messageAction = null;
+      this.canvas = canvas2;
+      const ctx = canvas2.getContext("2d");
+      if (!ctx)
+        throw new Error("Canvas 2D context not available.");
+      this.atmo = new Atmosphere();
+      this.physics = new PhysicsEngine(this.atmo);
+      this.rocket = new Rocket();
+      this.renderer = new Renderer(ctx);
+      this.ui = new UI(ctx, this.renderer);
+      this.mapView = new MapView(ctx, this.atmo);
+      this._bindInput();
+    }
+    // ─── Lifecycle ─────────────────────────────────────────────────────────────
+    init() {
+      this._resize();
+      window.addEventListener("resize", () => this._resize());
+    }
+    /** Main loop — called by requestAnimationFrame */
+    loop(timestamp) {
+      if (this.lastTime < 0)
+        this.lastTime = timestamp;
+      const rawDt = Math.min((timestamp - this.lastTime) / 1e3, 0.1);
+      this.lastTime = timestamp;
+      this.wallTime += rawDt;
+      this.renderer.time = this.wallTime;
+      this._processInput(rawDt);
+      switch (this.screen) {
+        case 0 /* MAIN_MENU */:
+          this._updateMainMenu();
+          break;
+        case 1 /* OPTIONS */:
+          this._updateOptions();
+          break;
+        case 2 /* VAB */:
+          this._updateVAB();
+          break;
+        case 3 /* STAGING */:
+          this._updateStaging();
+          break;
+        case 4 /* FLIGHT */:
+          this._updateFlight(rawDt);
+          break;
+        default:
+          break;
+      }
+      if (this.showMessage && this.messageAction) {
+        this.ui.renderMessage(this.messageTitle, this.messageBody, this.messageBtn, this.messageAction);
+      }
+    }
+    // ─── Screen Update Methods ─────────────────────────────────────────────────
+    _updateMainMenu() {
+      this.ui.renderMainMenu(
+        this.wallTime,
+        () => this._switchTo(2 /* VAB */),
+        () => this._switchTo(1 /* OPTIONS */),
+        () => {
+        }
+      );
+    }
+    _updateOptions() {
+      this.ui.renderOptions(() => this._switchTo(0 /* MAIN_MENU */));
+    }
+    _updateVAB() {
+      this.ui.renderVAB(
+        this.rocket,
+        () => this._launchRocket(),
+        () => this._switchTo(3 /* STAGING */),
+        () => this._switchTo(0 /* MAIN_MENU */)
+      );
+    }
+    _updateStaging() {
+      this.ui.renderStaging(
+        this.rocket,
+        () => this._switchTo(2 /* VAB */),
+        // confirm → back to VAB for now
+        () => this._switchTo(2 /* VAB */)
+      );
+    }
+    _updateFlight(rawDt) {
+      this.accumulator += rawDt;
+      let steps = 0;
+      while (this.accumulator >= PHYSICS_DT && steps < MAX_PHYSICS_STEPS) {
+        this.rocket.body.mass = this.rocket.getTotalMass();
+        this.physics.step(this.rocket.body, this.rocket, PHYSICS_DT);
+        this.accumulator -= PHYSICS_DT;
+        steps++;
+      }
+      if (this.accumulator > PHYSICS_DT * MAX_PHYSICS_STEPS) {
+        this.accumulator = 0;
+      }
+      this._checkFlightEvents();
+      const frame = this.physics.lastFrame;
+      if (this.isMapOpen) {
+        this.renderer.renderFlight(this.rocket, frame, this.throttle);
+        this.mapView.render(this.rocket, this.wallTime, () => {
+          this.isMapOpen = false;
+        });
+      } else {
+        this.renderer.renderFlight(this.rocket, frame, this.throttle);
+        this.renderer.renderHUD(
+          this.rocket,
+          frame,
+          this.throttle,
+          this.rocket.currentStage,
+          this.physics.missionTime
+        );
+      }
+    }
+    // ─── Input Processing ──────────────────────────────────────────────────────
+    _processInput(dt) {
+      if (this.screen !== 4 /* FLIGHT */)
+        return;
+      if (this.input.throttleUp)
+        this.throttle = Math.min(1, this.throttle + THROTTLE_RATE * dt);
+      if (this.input.throttleDown)
+        this.throttle = Math.max(0, this.throttle - THROTTLE_RATE * dt);
+      if (!this.isMapOpen) {
+        if (this.input.rotateLeft) {
+          this.physics.applyRotation(this.rocket.body, -1, dt, this.rocket.hasCommandPod);
+        }
+        if (this.input.rotateRight) {
+          this.physics.applyRotation(this.rocket.body, 1, dt, this.rocket.hasCommandPod);
+        }
+      }
+      this.rocket.throttle = this.throttle;
+      if (this.stagePressed) {
+        this.stagePressed = false;
+        this.rocket.activateNextStage();
+      }
+      if (this.mapPressed) {
+        this.mapPressed = false;
+        this.isMapOpen = !this.isMapOpen;
+        if (this.isMapOpen)
+          this.mapView.resetView();
+      }
+      if (this.escPressed) {
+        this.escPressed = false;
+        if (this.isMapOpen) {
+          this.isMapOpen = false;
+        } else {
+          this._switchTo(0 /* MAIN_MENU */);
+        }
+      }
+    }
+    // ─── Flight Events ─────────────────────────────────────────────────────────
+    _checkFlightEvents() {
+      const { lastFrame } = this.physics;
+      if (!this.rocket.hasLaunched && lastFrame.altitude > 10) {
+        this.rocket.hasLaunched = true;
+      }
+      if (lastFrame.altitude < 5 && lastFrame.verticalSpeed <= 0 && this.rocket.hasLaunched) {
+        const speed = lastFrame.speed;
+        if (speed < 10) {
+          this._showMessage(
+            "MISSION COMPLETE",
+            "Rocket landed safely!",
+            "OK",
+            () => {
+              this.showMessage = false;
+              this._switchTo(0 /* MAIN_MENU */);
+            }
+          );
+        } else if (speed > 200) {
+          this.rocket.isDestroyed = true;
+          this._showMessage(
+            "ROCKET DESTROYED",
+            `Crashed at ${speed.toFixed(0)} m/s`,
+            "OK",
+            () => {
+              this.showMessage = false;
+              this._switchTo(0 /* MAIN_MENU */);
+            }
+          );
+        }
+      }
+      if (lastFrame.heatingIntensity >= 0.99) {
+        this.rocket.isDestroyed = true;
+        this._showMessage(
+          "ROCKET DESTROYED",
+          "Burned up during re-entry!",
+          "OK",
+          () => {
+            this.showMessage = false;
+            this._switchTo(0 /* MAIN_MENU */);
+          }
+        );
+      }
+    }
+    // ─── Launch ────────────────────────────────────────────────────────────────
+    _launchRocket() {
+      if (this.rocket.parts.length === 0) {
+        this._showMessage("NO ROCKET", "Build a rocket first!", "OK", () => {
+          this.showMessage = false;
+        });
+        return;
+      }
+      if (this.rocket.stages.length === 0) {
+        this.rocket.autoStage();
+      }
+      this.rocket.placeOnLaunchpad();
+      this.physics.reset();
+      this.throttle = 0;
+      this.isMapOpen = false;
+      this.accumulator = 0;
+      this.showMessage = false;
+      this._switchTo(4 /* FLIGHT */);
+    }
+    // ─── Helpers ───────────────────────────────────────────────────────────────
+    _switchTo(screen) {
+      this.screen = screen;
+      if (screen === 2 /* VAB */) {
+      }
+    }
+    _showMessage(title, body, btn, action) {
+      if (this.showMessage)
+        return;
+      this.messageTitle = title;
+      this.messageBody = body;
+      this.messageBtn = btn;
+      this.messageAction = action;
+      this.showMessage = true;
+    }
+    _resize() {
+      const W = window.innerWidth;
+      const H = window.innerHeight;
+      this.canvas.width = W;
+      this.canvas.height = H;
+      this.renderer.resize(W, H);
+      this.ui.resize(W, H);
+      this.mapView.resize(W, H);
+    }
+    // ─── Input Binding ─────────────────────────────────────────────────────────
+    _bindInput() {
+      window.addEventListener("keydown", (e) => {
+        switch (e.code) {
+          case "ShiftLeft":
+          case "ShiftRight":
+            this.input.throttleUp = true;
+            break;
+          case "ControlLeft":
+          case "ControlRight":
+            this.input.throttleDown = true;
+            break;
+          case "KeyZ":
+            this.throttle = 1;
+            break;
+          case "KeyX":
+            this.throttle = 0;
+            break;
+          case "KeyA":
+          case "ArrowLeft":
+            this.input.rotateLeft = true;
+            break;
+          case "KeyD":
+          case "ArrowRight":
+            this.input.rotateRight = true;
+            break;
+          case "Space":
+            e.preventDefault();
+            this.stagePressed = true;
+            break;
+          case "KeyM":
+            this.mapPressed = true;
+            break;
+          case "Escape":
+            this.escPressed = true;
+            break;
+        }
+      });
+      window.addEventListener("keyup", (e) => {
+        switch (e.code) {
+          case "ShiftLeft":
+          case "ShiftRight":
+            this.input.throttleUp = false;
+            break;
+          case "ControlLeft":
+          case "ControlRight":
+            this.input.throttleDown = false;
+            break;
+          case "KeyA":
+          case "ArrowLeft":
+            this.input.rotateLeft = false;
+            break;
+          case "KeyD":
+          case "ArrowRight":
+            this.input.rotateRight = false;
+            break;
+        }
+      });
+      this.canvas.addEventListener("mousemove", (e) => {
+        const mx = e.clientX, my = e.clientY;
+        this.ui.mouseX = mx;
+        this.ui.mouseY = my;
+        this.ui.handleVABMouseMove(mx, my);
+        if (this.isMapOpen)
+          this.mapView.handleMouseMove(mx, my);
+      });
+      this.canvas.addEventListener("mousedown", (e) => {
+        if (this.isMapOpen)
+          this.mapView.handleMouseDown(e.clientX, e.clientY);
+      });
+      this.canvas.addEventListener("mouseup", () => {
+        if (this.isMapOpen)
+          this.mapView.handleMouseUp();
+      });
+      this.canvas.addEventListener("wheel", (e) => {
+        if (this.isMapOpen) {
+          e.preventDefault();
+          this.mapView.handleWheel(e);
+        }
+      }, { passive: false });
+      this.canvas.addEventListener("click", (e) => {
+        const mx = e.clientX, my = e.clientY;
+        if (this.showMessage && this.messageAction) {
+          this.ui.handleMessageClick(mx, my, this.messageAction);
+          return;
+        }
+        switch (this.screen) {
+          case 0 /* MAIN_MENU */:
+            this.ui.handleMainMenuClick(
+              mx,
+              my,
+              () => this._switchTo(2 /* VAB */),
+              () => this._switchTo(1 /* OPTIONS */),
+              () => {
+              }
+            );
+            break;
+          case 1 /* OPTIONS */:
+            this.ui.handleOptionsClick(mx, my, () => this._switchTo(0 /* MAIN_MENU */));
+            break;
+          case 2 /* VAB */:
+            this.ui.handleVABClick(
+              mx,
+              my,
+              this.rocket,
+              () => this._launchRocket(),
+              () => this._switchTo(3 /* STAGING */),
+              () => this._switchTo(0 /* MAIN_MENU */)
+            );
+            break;
+          case 3 /* STAGING */:
+            this.ui.handleStagingClick(
+              mx,
+              my,
+              this.rocket,
+              () => this._switchTo(2 /* VAB */),
+              () => this._switchTo(2 /* VAB */)
+            );
+            break;
+          case 4 /* FLIGHT */:
+            if (this.isMapOpen) {
+              this.mapView.handleClick(mx, my);
+            }
+            break;
+        }
+      });
+    }
+  };
+
+  // src/main.ts
+  var canvas = document.getElementById("game");
+  if (!canvas) {
+    throw new Error('Could not find <canvas id="game"> element in the DOM.');
+  }
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  var game = new Game(canvas);
+  game.init();
+  function loop(timestamp) {
+    game.loop(timestamp);
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+})();
+//# sourceMappingURL=bundle.js.map
