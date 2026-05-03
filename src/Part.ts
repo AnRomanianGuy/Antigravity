@@ -28,6 +28,8 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
     renderH: 52,
     color: '#4a7fa5',
     description: 'Crewed command module with SAS reaction wheel.',
+    maxTemperature: 1800,
+    heatResistance: 0.40,
   },
 
   [PartType.FUEL_TANK_S]: {
@@ -42,6 +44,8 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
     renderH: 80,
     color: '#7a8a9a',
     description: 'Standard short fuel tank (4.5t propellant).',
+    maxTemperature: 1400,
+    heatResistance: 0.15,
   },
 
   [PartType.FUEL_TANK_L]: {
@@ -56,6 +60,8 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
     renderH: 140,
     color: '#6a7a8a',
     description: 'Large fuel tank (9t propellant).',
+    maxTemperature: 1400,
+    heatResistance: 0.15,
   },
 
   [PartType.ENGINE]: {
@@ -63,16 +69,18 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
     name: 'LV-T30 Booster',
     dryMass: 1250,
     maxFuelMass: 0,
-    maxThrust: 215_000,  // vacuum thrust, N
-    isp: 310,            // vacuum Isp, s
-    ispSL: 265,          // sea-level Isp (atmosphere reduces nozzle efficiency)
-    thrustSL: 0.90,      // 90% thrust at sea level = 193.5 kN
+    maxThrust: 250_000,  // vacuum thrust, N
+    isp: 350,            // vacuum Isp, s
+    ispSL: 310,          // sea-level Isp (atmosphere reduces nozzle efficiency)
+    thrustSL: 0.92,      // 92% thrust at sea level = 230 kN
     dragCoeff: 0.50,
     crossSection: 1.54,
     renderW: 44,
     renderH: 62,
     color: '#8a5a3a',
-    description: 'High-thrust launch engine. 215 kN vac / 193.5 kN SL.',
+    description: 'High-thrust launch engine. 250 kN vac / 230 kN SL.',
+    maxTemperature: 2000,
+    heatResistance: 0.55,
   },
 
   [PartType.ENGINE_VACUUM]: {
@@ -80,8 +88,8 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
     name: 'LV-909 Terrier',
     dryMass: 390,
     maxFuelMass: 0,
-    maxThrust: 60_000,   // vacuum thrust, N
-    isp: 345,            // high vacuum Isp
+    maxThrust: 80_000,   // vacuum thrust, N
+    isp: 420,            // high vacuum Isp
     ispSL: 40,           // nearly useless at sea level (large nozzle stalls)
     thrustSL: 0.10,      // 10% thrust at sea level — do NOT use for launch
     dragCoeff: 0.35,
@@ -89,7 +97,9 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
     renderW: 50,
     renderH: 55,
     color: '#4a6a9a',
-    description: 'Vacuum-optimised upper-stage engine. 60 kN / Isp 345s vac.',
+    description: 'Vacuum-optimised upper-stage engine. 80 kN / Isp 420s vac.',
+    maxTemperature: 2000,
+    heatResistance: 0.55,
   },
 
   [PartType.DECOUPLER]: {
@@ -104,6 +114,8 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
     renderH: 20,
     color: '#aa8822',
     description: 'Separates rocket stages explosively.',
+    maxTemperature: 1600,
+    heatResistance: 0.25,
   },
 
   [PartType.FAIRING]: {
@@ -118,6 +130,8 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
     renderH: 100,
     color: '#3a5a7a',
     description: 'Reduces atmospheric drag on upper stages.',
+    maxTemperature: 1200,
+    heatResistance: 0.10,
   },
 
   [PartType.HEAT_SHIELD]: {
@@ -131,18 +145,20 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
     renderW: 50,
     renderH: 20,
     color: '#2a2a2a',
-    description: 'Ablative re-entry heat protection.',
+    description: 'Ablative re-entry heat protection. Place at the bottom for reentry.',
+    maxTemperature: 3500,
+    heatResistance: 0.95,
   },
 
   [PartType.SRB]: {
     type: PartType.SRB,
     name: 'RT-10 Hammer SRBs',  // always a symmetric pair
-    dryMass: 1_000,              // 500 kg × 2
-    maxFuelMass: 16_000,         // 8 t × 2 (one per booster)
-    maxThrust: 454_000,          // 227 kN × 2 boosters
-    isp: 195,
-    ispSL: 185,
-    thrustSL: 0.94,
+    dryMass: 900,                // 450 kg × 2
+    maxFuelMass: 20_000,         // 10 t × 2 (one per booster)
+    maxThrust: 560_000,          // 280 kN × 2 boosters
+    isp: 230,
+    ispSL: 220,
+    thrustSL: 0.96,
     ignoreThrottle: true,        // solid fuel — always full throttle
     radialMount: true,           // mounts on the sides, not stacked vertically
     dragCoeff: 0.30,
@@ -150,7 +166,9 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
     renderW: 36,
     renderH: 100,
     color: '#5a3a2a',
-    description: 'Pair of solid boosters mounted on the sides. 454 kN total, always full thrust.',
+    description: 'Pair of solid boosters mounted on the sides. 560 kN total, always full thrust.',
+    maxTemperature: 1800,
+    heatResistance: 0.50,
   },
 };
 
@@ -190,6 +208,15 @@ export class PartInstance {
    */
   slotIndex: number;
 
+  /** Current temperature in Kelvin (ambient = 293 K) */
+  currentTemperature = 293;
+
+  /** Heat damage accumulator 0–1; reaches 1 when part is destroyed */
+  heatDamage = 0;
+
+  /** True when heat damage has destroyed this part */
+  isDestroyed = false;
+
   constructor(type: PartType, slotIndex: number) {
     this.id = `part_${_nextId++}`;
     this.def = PART_CATALOGUE[type];
@@ -204,15 +231,15 @@ export class PartInstance {
     return this.def.dryMass + this.fuelRemaining;
   }
 
-  /** True if this part can produce thrust (engine + active) */
+  /** True if this part can produce thrust (engine + active + not destroyed) */
   get isThrusting(): boolean {
     return (this.def.type === PartType.ENGINE || this.def.type === PartType.ENGINE_VACUUM || this.def.type === PartType.SRB)
-      && this.isActive;
+      && this.isActive && !this.isDestroyed;
   }
 
-  /** True if this part is a fuel tank that still has propellant */
+  /** True if this part is a fuel tank that still has propellant and is intact */
   get hasFuel(): boolean {
-    return this.def.maxFuelMass > 0 && this.fuelRemaining > 0;
+    return this.def.maxFuelMass > 0 && this.fuelRemaining > 0 && !this.isDestroyed;
   }
 
   /** Drain up to `amount` kg of fuel, returns how much was actually drained */
@@ -230,6 +257,9 @@ export class PartInstance {
     copy.fuelRemaining = this.fuelRemaining;
     copy.isActive = this.isActive;
     copy.stageIndex = this.stageIndex;
+    copy.currentTemperature = this.currentTemperature;
+    copy.heatDamage = this.heatDamage;
+    copy.isDestroyed = this.isDestroyed;
     return copy;
   }
 }

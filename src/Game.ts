@@ -171,11 +171,14 @@ export class Game {
   }
 
   private _updateFlight(rawDt: number): void {
+    const warpFactor = this.WARP_LEVELS[this.warpIndex];
+
     // ── Physics sub-steps ─────────────────────────────────────────────────
-    this.accumulator += rawDt;
+    this.accumulator += rawDt * warpFactor;
+    const maxSteps = MAX_PHYSICS_STEPS * warpFactor;
     let steps = 0;
 
-    while (this.accumulator >= PHYSICS_DT && steps < MAX_PHYSICS_STEPS) {
+    while (this.accumulator >= PHYSICS_DT && steps < maxSteps) {
       // Pass throttle into physics via getThrust override
       this.rocket.body.mass = this.rocket.getTotalMass();
       this.physics.step(this.rocket.body, this.rocket, PHYSICS_DT);
@@ -183,7 +186,7 @@ export class Game {
       steps++;
     }
     // Discard leftover accumulator to prevent runaway
-    if (this.accumulator > PHYSICS_DT * MAX_PHYSICS_STEPS) {
+    if (this.accumulator > PHYSICS_DT * maxSteps) {
       this.accumulator = 0;
     }
 
@@ -205,6 +208,7 @@ export class Game {
         this.throttle,
         this.rocket.currentStage,
         this.physics.missionTime,
+        warpFactor,
       );
     }
   }
@@ -218,14 +222,24 @@ export class Game {
     if (this.input.throttleUp)   this.throttle = Math.min(1, this.throttle + THROTTLE_RATE * dt);
     if (this.input.throttleDown) this.throttle = Math.max(0, this.throttle - THROTTLE_RATE * dt);
 
-    // Rotation (only if not in map view)
-    if (!this.isMapOpen) {
+    // Rotation (only at 1x warp and not in map view)
+    if (!this.isMapOpen && this.warpIndex === 0) {
       if (this.input.rotateLeft) {
         this.physics.applyRotation(this.rocket.body, -1, dt, this.rocket.hasCommandPod);
       }
       if (this.input.rotateRight) {
         this.physics.applyRotation(this.rocket.body, +1, dt, this.rocket.hasCommandPod);
       }
+    }
+
+    // Warp (one-shot)
+    if (this.warpUpPressed) {
+      this.warpUpPressed = false;
+      this.warpIndex = Math.min(this.warpIndex + 1, this.WARP_LEVELS.length - 1);
+    }
+    if (this.warpDownPressed) {
+      this.warpDownPressed = false;
+      this.warpIndex = Math.max(this.warpIndex - 1, 0);
     }
 
     // Sync throttle to rocket — physics.step calls rocket.getThrust() which reads this
@@ -276,10 +290,10 @@ export class Game {
       }
     }
 
-    // Heat destruction
-    if (lastFrame.heatingIntensity >= 0.99) {
+    // Heat destruction — critical part burned through
+    if (!this.rocket.isDestroyed && this.rocket.hasDestroyedCriticalPart) {
       this.rocket.isDestroyed = true;
-      this._showMessage('ROCKET DESTROYED', 'Burned up during re-entry!', 'OK',
+      this._showMessage('ROCKET DESTROYED', 'Critical part burned through!', 'OK',
         () => { this.showMessage = false; this._switchTo(GameScreen.MAIN_MENU); });
     }
 
@@ -301,10 +315,11 @@ export class Game {
 
     this.rocket.placeOnLaunchpad();
     this.physics.reset();
-    this.throttle   = 0;
-    this.isMapOpen  = false;
+    this.throttle    = 0;
+    this.isMapOpen   = false;
     this.accumulator = 0;
     this.showMessage = false;
+    this.warpIndex   = 0;
 
     this._switchTo(GameScreen.FLIGHT);
   }
@@ -358,6 +373,12 @@ export class Game {
           break;
         case 'KeyM':
           this.mapPressed = true;
+          break;
+        case 'Comma':
+          this.warpDownPressed = true;
+          break;
+        case 'Period':
+          this.warpUpPressed = true;
           break;
         case 'Escape':
           if (this.screen === GameScreen.VAB) {
@@ -450,9 +471,16 @@ export class Game {
           break;
 
         case GameScreen.FLIGHT:
-          // Map view back button
           if (this.isMapOpen) {
             this.mapView.handleClick(mx, my);
+          } else {
+            const wd = this.renderer.warpDownBtn;
+            const wu = this.renderer.warpUpBtn;
+            if (mx >= wd.x && mx <= wd.x + wd.w && my >= wd.y && my <= wd.y + wd.h) {
+              this.warpIndex = Math.max(this.warpIndex - 1, 0);
+            } else if (mx >= wu.x && mx <= wu.x + wu.w && my >= wu.y && my <= wu.y + wu.h) {
+              this.warpIndex = Math.min(this.warpIndex + 1, this.WARP_LEVELS.length - 1);
+            }
           }
           break;
       }

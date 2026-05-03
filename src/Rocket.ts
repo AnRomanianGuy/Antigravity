@@ -314,6 +314,15 @@ export class Rocket {
     return !this.hasLaunched;
   }
 
+  /** True if any critical structural part (pod or tank) has been heat-destroyed */
+  get hasDestroyedCriticalPart(): boolean {
+    return this.parts.some(p => p.isDestroyed && (
+      p.def.type === PartType.COMMAND_POD ||
+      p.def.type === PartType.FUEL_TANK_S  ||
+      p.def.type === PartType.FUEL_TANK_L
+    ));
+  }
+
   // ─── Launch Initialisation ──────────────────────────────────────────────────
 
   /**
@@ -333,11 +342,14 @@ export class Rocket {
     this.isDestroyed = false;
     this.currentStage = -1;
 
-    // Make sure no engines are active on the pad
+    // Reset all part thermal state and deactivate engines
     for (const part of this.parts) {
       if (part.def.type === PartType.ENGINE || part.def.type === PartType.ENGINE_VACUUM || part.def.type === PartType.SRB) {
         part.isActive = false;
       }
+      part.currentTemperature = 293;
+      part.heatDamage = 0;
+      part.isDestroyed = false;
     }
   }
 

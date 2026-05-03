@@ -18,7 +18,7 @@
 
 import { vec2, Vec2, THEME, PartType } from './types';
 import { Rocket } from './Rocket';
-import { PhysicsFrame, R_EARTH } from './Physics';
+import { PhysicsFrame, R_EARTH, MAX_HEAT_FLUX } from './Physics';
 
 // ─── Star Catalogue (generated once) ──────────────────────────────────────────
 
@@ -130,14 +130,14 @@ export class Renderer {
     // Rocket parts
     this._drawRocketParts(rocket, partScale);
 
-    // Heat glow
-    if (frame.heatingIntensity > 0.01) {
-      this._drawHeatGlow(rocket, partScale, frame.heatingIntensity);
+    // Ascent aerodynamic compression (q-based: white/blue streaks, orange sparks at extreme q)
+    if (frame.dynamicPressure > 5_000 && Math.abs(frame.noseExposure) > 0.05) {
+      this._drawAscentAero(rocket, partScale, frame);
     }
 
-    // Plasma (reentry)
-    if (frame.heatingIntensity > 0.3 && frame.speed > 3000) {
-      this._drawPlasma(rocket, partScale, frame.heatingIntensity);
+    // Thermal heating / reentry plasma (heatFlux-based, renders on top of compression)
+    if (frame.heatFlux > 200 && Math.abs(frame.noseExposure) > 0.05) {
+      this._drawAeroHeating(rocket, partScale, frame);
     }
 
     ctx.restore();
@@ -373,22 +373,29 @@ export class Renderer {
       const y = yBottom - h;
 
       if (part.def.radialMount) {
-        // Draw two side boosters (left and right of the main stack)
-        const sideOffset = mainHW + radGap + w / 2;  // centre of each booster from rocket axis
+        const sideOffset = mainHW + radGap + w / 2;
 
         for (const side of [-1, 1] as const) {
           const bx = side * sideOffset - w / 2;
-          ctx.fillStyle = part.def.color;
-          this._roundRect(bx, y, w, h, 3 * scale);
-          ctx.fill();
-          ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-          ctx.lineWidth = 1 * scale;
-          this._roundRect(bx, y, w, h, 3 * scale);
-          ctx.stroke();
-          this._drawPartDecoration(part.def.type, bx, y, w, h, scale, part);
+          if (part.isDestroyed) {
+            // Charred remnant
+            ctx.fillStyle = '#1a1008';
+            this._roundRect(bx, y, w, h, 3 * scale);
+            ctx.fill();
+          } else {
+            ctx.fillStyle = part.def.color;
+            this._roundRect(bx, y, w, h, 3 * scale);
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+            ctx.lineWidth = 1 * scale;
+            this._roundRect(bx, y, w, h, 3 * scale);
+            ctx.stroke();
+            this._drawPartDecoration(part.def.type, bx, y, w, h, scale, part);
+            this._drawPartHeatGlow(ctx, bx, y, w, h, part.currentTemperature, scale);
+          }
         }
 
-        // Struts connecting each booster to the main stack
+        // Struts
         ctx.strokeStyle = 'rgba(160,170,180,0.55)';
         ctx.lineWidth = 2 * scale;
         for (const strutFrac of [0.25, 0.68]) {
@@ -402,14 +409,21 @@ export class Renderer {
         }
       } else {
         const x = -w / 2;
-        ctx.fillStyle = part.def.color;
-        this._roundRect(x, y, w, h, 3 * scale);
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-        ctx.lineWidth = 1 * scale;
-        this._roundRect(x, y, w, h, 3 * scale);
-        ctx.stroke();
-        this._drawPartDecoration(part.def.type, x, y, w, h, scale, part);
+        if (part.isDestroyed) {
+          ctx.fillStyle = '#1a1008';
+          this._roundRect(x, y, w, h, 3 * scale);
+          ctx.fill();
+        } else {
+          ctx.fillStyle = part.def.color;
+          this._roundRect(x, y, w, h, 3 * scale);
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+          ctx.lineWidth = 1 * scale;
+          this._roundRect(x, y, w, h, 3 * scale);
+          ctx.stroke();
+          this._drawPartDecoration(part.def.type, x, y, w, h, scale, part);
+          this._drawPartHeatGlow(ctx, x, y, w, h, part.currentTemperature, scale);
+        }
       }
 
       yBottom -= h;
@@ -631,66 +645,315 @@ export class Renderer {
     ctx.restore();
   }
 
-  // ─── Heat Glow ────────────────────────────────────────────────────────────
+  // ─── Per-part Temperature Glow ───────────────────────────────────────────
 
-  private _drawHeatGlow(_rocket: Rocket, scale: number, intensity: number): void {
+  private _drawPartHeatGlow(
+    ctx: CanvasRenderingContext2D,
+    x: number, y: number, w: number, h: number,
+    temp: number,
+    _scale: number,
+  ): void {
+    if (temp < 450) return;
+    const t = Math.min((temp - 450) / 1550, 1); // 0 at 450K, 1 at 2000K+
+    let r: number, g: number, b: number, a: number;
+    if (t < 0.33) {
+      // orange glow
+      const u = t / 0.33;
+      r = 255; g = Math.round(120 - u * 80); b = 0; a = 0.18 + u * 0.18;
+    } else if (t < 0.66) {
+      // red
+      const u = (t - 0.33) / 0.33;
+      r = 255; g = Math.round(40 - u * 40); b = Math.round(u * 60); a = 0.36 + u * 0.18;
+    } else {
+      // pink/white-hot
+      const u = (t - 0.66) / 0.34;
+      r = 255; g = Math.round(u * 180); b = Math.round(60 + u * 195); a = 0.54 + u * 0.30;
+    }
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    ctx.fillStyle = `rgba(${r},${g},${b},${a.toFixed(2)})`;
+    this._roundRect(x, y, w, h, 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // ─── Ascent Aerodynamic Compression ─────────────────────────────────────
+
+  /** Dynamic pressure thresholds (Pa) governing ascent visual tiers */
+  private static readonly Q_STREAK_START =  5_000;   // subtle haze begins
+  private static readonly Q_STREAK_FULL  = 25_000;   // full white/blue streaks
+  private static readonly Q_ORANGE_START = 45_000;   // orange tint + Max-Q warning
+  private static readonly Q_EXTREME      = 80_000;   // extreme orange sparks
+
+  /**
+   * Draw ascent-phase aerodynamic compression effects in local rocket space.
+   * Effect tiers:
+   *   5–25 kPa  : faint blue/white compression haze + thin streaks
+   *  25–45 kPa  : stronger streaks + edge lines
+   *  45–80 kPa  : haze turns orange, streaks turn orange, sparks appear
+   */
+  private _drawAscentAero(rocket: Rocket, scale: number, frame: PhysicsFrame): void {
+    const q = frame.dynamicPressure;
+    if (q < Renderer.Q_STREAK_START) return;
+
+    const noseExp  = frame.noseExposure;
+    const exposure = Math.abs(noseExp);
+    if (exposure < 0.05) return;
+
     const ctx = this.ctx;
-    const glowR = (80 + intensity * 200) * scale;
+    const t   = this.time;
 
-    // Glow is centred on the rocket body
-    const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, glowR);
-    const alpha = Math.min(intensity * 0.85, 0.75);
-    grad.addColorStop(0,   `rgba(255,220,80,${alpha})`);
-    grad.addColorStop(0.3, `rgba(255,100,0,${alpha * 0.6})`);
-    grad.addColorStop(0.7, `rgba(200,0,0,${alpha * 0.2})`);
-    grad.addColorStop(1,   'rgba(200,0,0,0)');
+    const totalH = rocket.parts.reduce((s, p) => s + p.def.renderH * scale, 0);
+    const halfH  = totalH / 2;
+    const maxW   = rocket.parts.reduce((m, p) => Math.max(m, p.def.renderW * scale), 44 * scale);
+
+    // noseExp < 0 → nose (top, localY = -halfH) is windward during ascent
+    const noseIsWindward = noseExp < 0;
+    const windwardY = noseIsWindward ? -halfH :  halfH;
+    const streamSgn = noseIsWindward ?      1 :     -1;
+
+    // Normalised intensity fractions
+    const qFrac   = Math.min((q - Renderer.Q_STREAK_START) /
+                             (Renderer.Q_EXTREME - Renderer.Q_STREAK_START), 1.0);
+    const qOrange = Math.max(0, (q - Renderer.Q_ORANGE_START) /
+                                (Renderer.Q_EXTREME - Renderer.Q_ORANGE_START));
+
+    // Lightweight seeded "random" (same result every frame → no flicker at rest)
+    const frand = (seed: number): number => {
+      let s = (seed ^ 0xf00dcafe) >>> 0;
+      s = Math.imul(s ^ (s >>> 16), 0x45d9f3b) >>> 0;
+      return (s ^ (s >>> 16)) / 0xffffffff;
+    };
 
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
-    ctx.beginPath();
-    ctx.arc(0, 0, glowR, 0, Math.PI * 2);
-    ctx.fillStyle = grad;
-    ctx.fill();
+
+    // ── Compression haze cap at windward face ─────────────────────────────
+    {
+      const hazeR  = maxW * (0.45 + qFrac * 0.95);
+      const hazeOY = windwardY - streamSgn * hazeR * 0.30;
+      const hazeA  = qFrac * 0.17 * exposure;
+
+      const haze = ctx.createRadialGradient(0, hazeOY, 0, 0, windwardY, hazeR);
+      if (qOrange <= 0) {
+        haze.addColorStop(0,   `rgba(195,228,255,${(hazeA * 1.25).toFixed(2)})`);
+        haze.addColorStop(0.45,`rgba(110,175,255,${(hazeA * 0.50).toFixed(2)})`);
+        haze.addColorStop(1,   'rgba(55,115,255,0)');
+      } else {
+        const ob = Math.min(qOrange, 1);
+        const g  = Math.round(228 - ob * 150);
+        haze.addColorStop(0,   `rgba(255,${g},${Math.round(255*(1-ob))},${(hazeA * 1.35).toFixed(2)})`);
+        haze.addColorStop(0.4, `rgba(255,${Math.round(g*0.45)},0,${(hazeA * 0.45).toFixed(2)})`);
+        haze.addColorStop(1,   'rgba(200,30,0,0)');
+      }
+
+      ctx.beginPath();
+      ctx.ellipse(0, windwardY, hazeR * 0.50, hazeR, 0, 0, Math.PI * 2);
+      ctx.fillStyle = haze;
+      ctx.fill();
+    }
+
+    // ── Airflow streaks flowing from windward face ────────────────────────
+    {
+      const numStreaks = Math.floor(2 + qFrac * 11);
+      const streakLen  = totalH * (0.22 + qFrac * 0.62);
+      const halfSpread = maxW * 0.56;
+
+      for (let i = 0; i < numStreaks; i++) {
+        const sp    = 1.7 + frand(i * 11) * 2.6;
+        const phase = (t * sp + frand(i * 7 + 1)) % 1.0;
+        if (phase > 0.85) continue;
+
+        const alpha = qFrac * exposure * (0.48 - phase * 0.55);
+        if (alpha < 0.015) continue;
+
+        const xOff  = (frand(i * 19 + 2) - 0.5) * halfSpread * 2;
+        const xEnd  = xOff * (0.22 + frand(i * 29 + 3) * 0.44);
+        const startY = windwardY + streamSgn * phase * streakLen * 0.06;
+        const endY   = windwardY + streamSgn * phase * streakLen;
+
+        let stroke: string;
+        if (qOrange <= 0) {
+          stroke = `hsla(${200 + frand(i)*22},68%,88%,${alpha.toFixed(2)})`;
+        } else {
+          const hue = Math.round(200 - Math.min(qOrange, 1) * 172);
+          stroke = `hsla(${hue},90%,80%,${alpha.toFixed(2)})`;
+        }
+
+        ctx.beginPath();
+        ctx.moveTo(xOff, startY);
+        ctx.quadraticCurveTo(xOff * 0.52, (startY + endY) * 0.5, xEnd, endY);
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth   = (0.4 + frand(i * 37) * 0.9) * scale;
+        ctx.stroke();
+      }
+    }
+
+    // ── Edge compression lines along rocket body sides ────────────────────
+    if (qFrac > 0.15) {
+      const edgeA = (qFrac - 0.15) / 0.85 * 0.32 * exposure;
+      const bodyHW = maxW * 0.50;
+
+      for (const side of [-1, 1] as const) {
+        const ex = side * bodyHW;
+        const gStart = windwardY;
+        const gEnd   = windwardY + streamSgn * halfH * 1.6;
+        const eGrad  = ctx.createLinearGradient(0, gStart, 0, gEnd);
+
+        if (qOrange <= 0) {
+          eGrad.addColorStop(0,    `rgba(180,218,255,${edgeA.toFixed(2)})`);
+          eGrad.addColorStop(0.55, `rgba(110,170,255,${(edgeA * 0.38).toFixed(2)})`);
+          eGrad.addColorStop(1,    'rgba(60,110,255,0)');
+        } else {
+          const ob = Math.min(qOrange, 1);
+          eGrad.addColorStop(0,    `rgba(255,${Math.round(200 - ob*155)},55,${edgeA.toFixed(2)})`);
+          eGrad.addColorStop(0.5,  `rgba(255,70,0,${(edgeA * 0.32).toFixed(2)})`);
+          eGrad.addColorStop(1,    'rgba(220,30,0,0)');
+        }
+
+        ctx.beginPath();
+        ctx.moveTo(ex, -halfH);
+        ctx.lineTo(ex,  halfH);
+        ctx.strokeStyle = eGrad;
+        ctx.lineWidth   = (0.7 + qFrac * 1.3) * scale;
+        ctx.stroke();
+      }
+    }
+
+    // ── Orange sparks at extreme dynamic pressure ─────────────────────────
+    if (qOrange > 0) {
+      const sparkCount = Math.floor(qOrange * 5);
+      for (let i = 0; i < sparkCount; i++) {
+        const sp    = 3.0 + frand(i * 41) * 4.0;
+        const phase = (t * sp + frand(i * 53)) % 1.0;
+        if (phase > 0.46) continue;
+
+        const sx = (frand(i * 61 + 7) - 0.5) * maxW * 0.72;
+        const sy = windwardY + streamSgn * phase * maxW * 1.05;
+        const sr = (0.65 + frand(i * 71) * 1.9) * scale;
+        const sa = Math.min((0.46 - phase) * 2.2 * qOrange, 0.92);
+
+        ctx.beginPath();
+        ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255,${Math.round(90 + frand(i*83)*90)},0,${sa.toFixed(2)})`;
+        ctx.fill();
+      }
+    }
+
     ctx.globalCompositeOperation = 'source-over';
     ctx.restore();
   }
 
-  // ─── Plasma Effect (reentry) ──────────────────────────────────────────────
+  // ─── Directional Aerodynamic Heating ─────────────────────────────────────
 
-  private _drawPlasma(_rocket: Rocket, scale: number, intensity: number): void {
-    const ctx = this.ctx;
-    const t    = this.time;
-    const streakR = (50 + intensity * 150) * scale;
+  /**
+   * Draw windward-side heating effect in local rocket space (after ctx.translate+rotate).
+   * noseExposure < 0 → nose (local y = -halfH) is windward.
+   * noseExposure > 0 → tail (local y = +halfH) is windward.
+   */
+  private _drawAeroHeating(rocket: Rocket, scale: number, frame: PhysicsFrame): void {
+    const ctx       = this.ctx;
+    const t         = this.time;
+    const intensity = Math.min(frame.heatFlux / MAX_HEAT_FLUX, 1.0);
+    const exposure  = Math.abs(frame.noseExposure);
+    if (intensity < 0.01 || exposure < 0.05) return;
+
+    const totalH = rocket.parts.reduce((s, p) => s + p.def.renderH * scale, 0);
+    const halfH  = totalH / 2;
+    // Widest part — governs glow spread
+    const maxW   = rocket.parts.reduce((m, p) => Math.max(m, p.def.renderW * scale), 44 * scale);
+
+    // noseExposure < 0 → nose (top, localY=-halfH) is windward
+    const noseIsWindward = frame.noseExposure < 0;
+    const windwardY = noseIsWindward ? -halfH : halfH;
+    const streamSgn = noseIsWindward ? 1 : -1;  // +1 = streams flow downward (nose→tail)
 
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
 
-    // Draw 14 arcing plasma streaks around the rocket
-    for (let i = 0; i < 14; i++) {
-      const phase   = (i / 14) * Math.PI * 2 + t * 4.5;
-      const spread  = 0.4 + intensity * 0.6;
-      const startA  = phase - spread;
-      const endA    = phase + spread;
-      const r       = streakR * (0.6 + Math.sin(t * 7 + i) * 0.4);
+    // ── Shock cap / bow-wave glow ─────────────────────────────────────────
+    const glowRadius = maxW * (0.8 + intensity * 1.4);
+    const glowOffY   = windwardY - streamSgn * glowRadius * 0.35; // slightly beyond face
+    const shock = ctx.createRadialGradient(0, glowOffY, 0, 0, windwardY, glowRadius);
 
-      const hue    = 180 + Math.sin(t * 3 + i) * 40;   // cyan → blue range
-      const alpha  = intensity * (0.5 + Math.sin(t * 5 + i * 1.3) * 0.3);
+    if (intensity < 0.35) {
+      const a = intensity * 2.5;
+      shock.addColorStop(0, `rgba(255,200,60,${(a * 0.9).toFixed(2)})`);
+      shock.addColorStop(0.45, `rgba(255,80,0,${(a * 0.5).toFixed(2)})`);
+      shock.addColorStop(1, 'rgba(255,40,0,0)');
+    } else if (intensity < 0.65) {
+      const a = 0.7 + (intensity - 0.35) * 0.6;
+      shock.addColorStop(0, `rgba(255,120,60,${a.toFixed(2)})`);
+      shock.addColorStop(0.35, `rgba(255,20,80,${(a * 0.65).toFixed(2)})`);
+      shock.addColorStop(1, 'rgba(200,0,120,0)');
+    } else {
+      const a = 0.88;
+      shock.addColorStop(0, `rgba(255,240,255,${a.toFixed(2)})`);
+      shock.addColorStop(0.25, `rgba(200,40,255,${(a * 0.75).toFixed(2)})`);
+      shock.addColorStop(0.7, `rgba(80,0,200,${(a * 0.3).toFixed(2)})`);
+      shock.addColorStop(1, 'rgba(40,0,100,0)');
+    }
+
+    ctx.beginPath();
+    ctx.ellipse(0, windwardY, glowRadius * 0.65, glowRadius, 0, 0, Math.PI * 2);
+    ctx.fillStyle = shock;
+    ctx.fill();
+
+    // ── Plasma streaks trailing from windward face ────────────────────────
+    const numStreaks = Math.floor(5 + intensity * 12);
+    const streakLen  = totalH * (0.4 + intensity * 1.2);
+    const halfSpread = maxW * 0.55;
+
+    // Lightweight deterministic "random" for streak positions
+    const frand = (seed: number) => {
+      let s = (seed ^ 0xdeadbeef) >>> 0;
+      s = Math.imul(s ^ (s >>> 16), 0x45d9f3b) >>> 0;
+      return (s ^ (s >>> 16)) / 0xffffffff;
+    };
+
+    for (let i = 0; i < numStreaks; i++) {
+      const speed  = 1.5 + frand(i * 7)    * 2.5;
+      const phase  = (t * speed + frand(i * 13)) % 1.0;
+      if (phase > 0.82) continue;  // brief gap at wrap
+
+      const alpha  = intensity * exposure * (0.7 - phase * 0.85);
+      if (alpha < 0.02) continue;
+
+      const xOff   = (frand(i * 17 + 1) - 0.5) * halfSpread * 2;
+      const xEnd   = xOff * (0.3 + frand(i * 23) * 0.5);  // converge toward axis
+      const startY = windwardY + streamSgn * phase * streakLen * 0.08;
+      const endY   = windwardY + streamSgn * phase * streakLen;
+
+      // Colour: orange→red→pink/purple based on intensity
+      const hue = intensity < 0.35 ? 25 + frand(i) * 15
+                : intensity < 0.65 ? 355 + frand(i) * 20
+                : 285 + frand(i) * 40;
+      const sat = intensity < 0.65 ? 100 : 80 + frand(i * 3) * 20;
 
       ctx.beginPath();
-      ctx.arc(0, 0, r, startA, endA);
-      ctx.strokeStyle = `hsla(${hue},100%,75%,${alpha.toFixed(2)})`;
-      ctx.lineWidth   = (3 + Math.sin(t * 11 + i) * 2) * scale;
+      ctx.moveTo(xOff, startY);
+      ctx.quadraticCurveTo(xOff * 0.6, (startY + endY) / 2, xEnd, endY);
+      ctx.strokeStyle = `hsla(${hue},${sat}%,72%,${alpha.toFixed(2)})`;
+      ctx.lineWidth   = (0.8 + frand(i * 31) * 1.4) * scale;
       ctx.stroke();
     }
 
-    // Bright core shock
-    const shockGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, streakR * 0.5);
-    shockGrad.addColorStop(0, `rgba(200,240,255,${intensity * 0.5})`);
-    shockGrad.addColorStop(1, 'rgba(0,200,255,0)');
-    ctx.beginPath();
-    ctx.arc(0, 0, streakR * 0.5, 0, Math.PI * 2);
-    ctx.fillStyle = shockGrad;
-    ctx.fill();
+    // ── Bright stagnation point core ─────────────────────────────────────
+    if (intensity > 0.2) {
+      const coreR  = maxW * 0.18 * intensity;
+      const pulse  = 0.85 + Math.sin(t * 18) * 0.15;
+      const coreA  = intensity * exposure * 0.9 * pulse;
+      const coreGrad = ctx.createRadialGradient(0, windwardY, 0, 0, windwardY, coreR);
+      coreGrad.addColorStop(0, `rgba(255,255,255,${coreA.toFixed(2)})`);
+      coreGrad.addColorStop(0.5, intensity > 0.6
+        ? `rgba(220,120,255,${(coreA * 0.6).toFixed(2)})`
+        : `rgba(255,160,60,${(coreA * 0.6).toFixed(2)})`);
+      coreGrad.addColorStop(1, 'rgba(255,0,0,0)');
+      ctx.beginPath();
+      ctx.arc(0, windwardY, coreR, 0, Math.PI * 2);
+      ctx.fillStyle = coreGrad;
+      ctx.fill();
+    }
 
     ctx.globalCompositeOperation = 'source-over';
     ctx.restore();
@@ -923,7 +1186,14 @@ export class Renderer {
       const ry = panelY + 22 + i * 22;
       ctx.fillStyle = THEME.textDim;
       ctx.fillText(label, panelX + 10, ry);
-      ctx.fillStyle = THEME.text;
+      // Colour-code the Q row: white → warning → danger at Max-Q
+      if (label === 'Q') {
+        ctx.fillStyle = frame.dynamicPressure > Renderer.Q_ORANGE_START ? THEME.danger
+                      : frame.dynamicPressure > Renderer.Q_STREAK_FULL  ? THEME.warning
+                      : THEME.text;
+      } else {
+        ctx.fillStyle = THEME.text;
+      }
       ctx.fillText(value, panelX + 60, ry);
     });
 
@@ -994,17 +1264,32 @@ export class Renderer {
     ctx.fillStyle = THEME.text;
     ctx.fillText(`${Math.round(throttle * 100)}%`, thrX, thrY + 134);
 
-    // ── Heat warning ─────────────────────────────────────────────────────
-    if (frame.heatingIntensity > 0.1) {
-      const heatAlpha = Math.min(frame.heatingIntensity, 1);
-      ctx.fillStyle = `rgba(255,80,0,${(heatAlpha * 0.25).toFixed(2)})`;
+    // ── Max-Q warning ─────────────────────────────────────────────────────
+    if (frame.dynamicPressure > Renderer.Q_ORANGE_START) {
+      const qFrac  = Math.min((frame.dynamicPressure - Renderer.Q_ORANGE_START) / 40_000, 1);
+      const pulse  = 0.70 + Math.sin(this.time * 9) * 0.30;
+      const qAlpha = qFrac * pulse * 0.88;
+      // Subtle screen tint (blue — compression, not heat)
+      ctx.fillStyle = `rgba(80,120,255,${(qFrac * 0.10).toFixed(2)})`;
       ctx.fillRect(0, 0, W, H);
-
-      ctx.fillStyle = `rgba(255,140,0,${heatAlpha.toFixed(2)})`;
+      ctx.fillStyle = `rgba(255,${Math.round(190 - qFrac * 90)},0,${qAlpha.toFixed(2)})`;
       ctx.font = 'bold 12px Courier New';
       ctx.textAlign = 'center';
+      ctx.fillText('MAX-Q', W / 2, H / 2 + 8);
+    }
+
+    // ── Heat warning ─────────────────────────────────────────────────────
+    const heatIntensity = Math.min(frame.heatFlux / MAX_HEAT_FLUX, 1);
+    if (heatIntensity > 0.08) {
+      ctx.fillStyle = `rgba(255,60,0,${(heatIntensity * 0.22).toFixed(2)})`;
+      ctx.fillRect(0, 0, W, H);
+
+      ctx.fillStyle = `rgba(255,140,0,${Math.min(heatIntensity * 1.2, 1).toFixed(2)})`;
+      ctx.font = 'bold 12px Courier New';
+      ctx.textAlign = 'center';
+      const noShield = heatIntensity > 0.55;
       ctx.fillText(
-        frame.heatingIntensity > 0.7 ? '⚠ CRITICAL HEATING ⚠' : '⚠ HEATING',
+        noShield ? '⚠ CRITICAL HEATING ⚠' : '⚠ HEATING',
         W / 2, H / 2 - 20,
       );
     }

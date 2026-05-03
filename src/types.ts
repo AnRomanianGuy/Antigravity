@@ -103,6 +103,10 @@ export interface PartDef {
   color: string;
   /** Brief tooltip description */
   description: string;
+  /** Destruction temperature in Kelvin */
+  maxTemperature: number;
+  /** Fraction of incoming heat flux blocked (0 = none, 0.95 = heat shield) */
+  heatResistance: number;
 }
 
 // ─── Staging ──────────────────────────────────────────────────────────────────

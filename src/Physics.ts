@@ -51,20 +51,38 @@ const GIMBAL_TORQUE_COEFF = 60_000;
 /** Angular damping factor per physics step (0.985^60 ≈ 0.40/s — responsive but not twitchy) */
 const ANGULAR_DAMPING = 0.985;
 
+// ─── Heating Constants ────────────────────────────────────────────────────────
+
+/** Heat flux coefficient: heatFlux = HEAT_COEFF * rho * v³  (game-tuned, not SI) */
+const HEAT_COEFF = 7e-5;
+
+/** Radiation cooling: fraction of excess temperature lost per second */
+const HEAT_COOLING = 0.05;
+
+/** Seconds at over-temperature before the part is fully destroyed */
+const HEAT_DESTROY_TIME = 8;
+
+/** Max heat flux used to normalise visual intensity (0–1) */
+export const MAX_HEAT_FLUX = 360_000;
+
 // ─── Physics State (extra per-frame data beyond RigidBody) ───────────────────
 
 export interface PhysicsFrame {
-  altitude: number;       // metres above surface
-  speed: number;          // |vel| in m/s
-  verticalSpeed: number;  // m/s (positive = away from Earth)
-  horizontalSpeed: number; // m/s (surface-relative eastward)
-  heatingIntensity: number; // 0–1 (for visual effects)
+  altitude: number;         // metres above surface
+  speed: number;            // |vel| in m/s
+  verticalSpeed: number;    // m/s (positive = away from Earth)
+  horizontalSpeed: number;  // m/s (surface-relative eastward)
+  heatingIntensity: number; // 0–1 (legacy, kept for HUD)
   dynamicPressure: number;  // Pa
-  gravityAcc: number;      // m/s² magnitude
-  dragForce: number;       // N magnitude
-  thrustForce: number;     // N magnitude
-  mach: number;            // current Mach number
-  atmoLayerName: string;   // e.g. 'TROPOSPHERE', 'EXOSPHERE'
+  gravityAcc: number;       // m/s² magnitude
+  dragForce: number;        // N magnitude
+  thrustForce: number;      // N magnitude
+  mach: number;             // current Mach number
+  atmoLayerName: string;    // e.g. 'TROPOSPHERE', 'EXOSPHERE'
+  // ── Aerodynamic heating ──
+  airflowDir: Vec2;         // unit vector: direction airflow travels (= normalize(-vel))
+  heatFlux: number;         // raw heat flux before shielding (game units)
+  noseExposure: number;     // dot(noseDir, airflowDir): <0 = nose windward, >0 = tail windward
 }
 
 // ─── Physics Engine ───────────────────────────────────────────────────────────
@@ -88,6 +106,9 @@ export class PhysicsEngine {
     thrustForce: 0,
     mach: 0,
     atmoLayerName: 'TROPOSPHERE',
+    airflowDir: { x: 0, y: -1 },
+    heatFlux: 0,
+    noseExposure: 0,
   };
 
   constructor(atmo: Atmosphere) {
@@ -215,6 +236,74 @@ export class PhysicsEngine {
     // ── Heating ─────────────────────────────────────────────────────────────
     const heatingIntensity = this.atmo.getHeatingIntensity(altitude, speed);
 
+    // Airflow direction: where air appears to come from (= opposite to velocity)
+    const airflowDir: Vec2 = speed > 0
+      ? { x: -body.vel.x / speed, y: -body.vel.y / speed }
+      : { x: 0, y: -1 };
+
+    // How much the nose faces into the airflow:
+    //   < 0 → nose is windward (ascending nose-first or reentry tail-shield)
+    //   > 0 → tail is windward (retrograde reentry without proper orientation)
+    const noseExposure = vec2.dot(noseDir, airflowDir);
+    const exposure = Math.abs(noseExposure);
+
+    // Raw heat flux (game units, calibrated for ~20 s to destroy unshielded tank at peak)
+    const heatFlux = rho > 0 ? HEAT_COEFF * rho * speed * speed * speed : 0;
+
+    // Per-part temperature update (only in atmosphere and with meaningful exposure)
+    if (heatFlux > 500 && exposure > 0.05) {
+      // Order parts from windward end to leeward end
+      // noseExposure < 0 → nose (high slot) is first to heat → sort high-slot first
+      // noseExposure > 0 → tail (slot 0) is first → sort low-slot first
+      const windwardFirst = noseExposure < 0
+        ? [...rocket.parts].sort((a, b) => b.slotIndex - a.slotIndex)
+        : [...rocket.parts].sort((a, b) => a.slotIndex - b.slotIndex);
+
+      let passthrough = exposure;  // angular factor reduces effective heat
+
+      for (const part of windwardFirst) {
+        if (part.isDestroyed) continue;  // destroyed parts don't shield
+
+        const partHeat = heatFlux * passthrough;
+        // dT: heat input minus part heat capacity (simplified: 1 J per kg per K)
+        const dT = partHeat * (1 - part.def.heatResistance)
+                   / Math.max(part.currentMass, 50) * dt;
+        part.currentTemperature += dT;
+
+        // Radiation cooling — slow bleed proportional to excess above ambient
+        const excess = part.currentTemperature - 293;
+        if (excess > 0) {
+          part.currentTemperature -= HEAT_COOLING * excess * dt;
+          part.currentTemperature = Math.max(293, part.currentTemperature);
+        }
+
+        // Reduce heat flowing to parts further down (shielding effect)
+        passthrough *= Math.max(0, 1 - part.def.heatResistance * 0.92);
+        if (passthrough < 0.005) break;
+
+        // Destruction accumulation
+        if (part.currentTemperature > part.def.maxTemperature) {
+          part.heatDamage += dt / HEAT_DESTROY_TIME;
+          if (part.heatDamage >= 1.0) {
+            part.isDestroyed = true;
+          }
+        } else {
+          // Cool recovery when under max temp
+          part.heatDamage = Math.max(0, part.heatDamage - dt * 0.05);
+        }
+      }
+    } else if (heatFlux <= 100) {
+      // Out of atmosphere or slow: all parts cool toward ambient
+      for (const part of rocket.parts) {
+        if (part.isDestroyed) continue;
+        const excess = part.currentTemperature - 293;
+        if (excess > 0) {
+          part.currentTemperature -= HEAT_COOLING * 0.5 * excess * dt;
+          part.currentTemperature = Math.max(293, part.currentTemperature);
+        }
+      }
+    }
+
     // ── Mach number ─────────────────────────────────────────────────────────
     const mach = soundSpeed > 0 ? speed / soundSpeed : 0;
 
@@ -239,6 +328,9 @@ export class PhysicsEngine {
       thrustForce: thrustMag,
       mach,
       atmoLayerName,
+      airflowDir,
+      heatFlux,
+      noseExposure,
     };
   }
 
@@ -309,6 +401,7 @@ export class PhysicsEngine {
       altitude: 0, speed: 0, verticalSpeed: 0, horizontalSpeed: 0,
       heatingIntensity: 0, dynamicPressure: 0, gravityAcc: G0,
       dragForce: 0, thrustForce: 0, mach: 0, atmoLayerName: 'TROPOSPHERE',
+      airflowDir: { x: 0, y: -1 }, heatFlux: 0, noseExposure: 0,
     };
   }
 

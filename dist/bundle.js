@@ -56,7 +56,9 @@
       renderW: 44,
       renderH: 52,
       color: "#4a7fa5",
-      description: "Crewed command module with SAS reaction wheel."
+      description: "Crewed command module with SAS reaction wheel.",
+      maxTemperature: 1800,
+      heatResistance: 0.4
     },
     [1 /* FUEL_TANK_S */]: {
       type: 1 /* FUEL_TANK_S */,
@@ -72,7 +74,9 @@
       renderW: 44,
       renderH: 80,
       color: "#7a8a9a",
-      description: "Standard short fuel tank (4.5t propellant)."
+      description: "Standard short fuel tank (4.5t propellant).",
+      maxTemperature: 1400,
+      heatResistance: 0.15
     },
     [2 /* FUEL_TANK_L */]: {
       type: 2 /* FUEL_TANK_L */,
@@ -88,36 +92,40 @@
       renderW: 44,
       renderH: 140,
       color: "#6a7a8a",
-      description: "Large fuel tank (9t propellant)."
+      description: "Large fuel tank (9t propellant).",
+      maxTemperature: 1400,
+      heatResistance: 0.15
     },
     [3 /* ENGINE */]: {
       type: 3 /* ENGINE */,
       name: "LV-T30 Booster",
       dryMass: 1250,
       maxFuelMass: 0,
-      maxThrust: 215e3,
+      maxThrust: 25e4,
       // vacuum thrust, N
-      isp: 310,
+      isp: 350,
       // vacuum Isp, s
-      ispSL: 265,
+      ispSL: 310,
       // sea-level Isp (atmosphere reduces nozzle efficiency)
-      thrustSL: 0.9,
-      // 90% thrust at sea level = 193.5 kN
+      thrustSL: 0.92,
+      // 92% thrust at sea level = 230 kN
       dragCoeff: 0.5,
       crossSection: 1.54,
       renderW: 44,
       renderH: 62,
       color: "#8a5a3a",
-      description: "High-thrust launch engine. 215 kN vac / 193.5 kN SL."
+      description: "High-thrust launch engine. 250 kN vac / 230 kN SL.",
+      maxTemperature: 2e3,
+      heatResistance: 0.55
     },
     [4 /* ENGINE_VACUUM */]: {
       type: 4 /* ENGINE_VACUUM */,
       name: "LV-909 Terrier",
       dryMass: 390,
       maxFuelMass: 0,
-      maxThrust: 6e4,
+      maxThrust: 8e4,
       // vacuum thrust, N
-      isp: 345,
+      isp: 420,
       // high vacuum Isp
       ispSL: 40,
       // nearly useless at sea level (large nozzle stalls)
@@ -129,7 +137,9 @@
       renderW: 50,
       renderH: 55,
       color: "#4a6a9a",
-      description: "Vacuum-optimised upper-stage engine. 60 kN / Isp 345s vac."
+      description: "Vacuum-optimised upper-stage engine. 80 kN / Isp 420s vac.",
+      maxTemperature: 2e3,
+      heatResistance: 0.55
     },
     [5 /* DECOUPLER */]: {
       type: 5 /* DECOUPLER */,
@@ -145,7 +155,9 @@
       renderW: 44,
       renderH: 20,
       color: "#aa8822",
-      description: "Separates rocket stages explosively."
+      description: "Separates rocket stages explosively.",
+      maxTemperature: 1600,
+      heatResistance: 0.25
     },
     [6 /* FAIRING */]: {
       type: 6 /* FAIRING */,
@@ -161,7 +173,9 @@
       renderW: 56,
       renderH: 100,
       color: "#3a5a7a",
-      description: "Reduces atmospheric drag on upper stages."
+      description: "Reduces atmospheric drag on upper stages.",
+      maxTemperature: 1200,
+      heatResistance: 0.1
     },
     [7 /* HEAT_SHIELD */]: {
       type: 7 /* HEAT_SHIELD */,
@@ -177,21 +191,23 @@
       renderW: 50,
       renderH: 20,
       color: "#2a2a2a",
-      description: "Ablative re-entry heat protection."
+      description: "Ablative re-entry heat protection. Place at the bottom for reentry.",
+      maxTemperature: 3500,
+      heatResistance: 0.95
     },
     [8 /* SRB */]: {
       type: 8 /* SRB */,
       name: "RT-10 Hammer SRBs",
       // always a symmetric pair
-      dryMass: 1e3,
-      // 500 kg × 2
-      maxFuelMass: 16e3,
-      // 8 t × 2 (one per booster)
-      maxThrust: 454e3,
-      // 227 kN × 2 boosters
-      isp: 195,
-      ispSL: 185,
-      thrustSL: 0.94,
+      dryMass: 900,
+      // 450 kg × 2
+      maxFuelMass: 2e4,
+      // 10 t × 2 (one per booster)
+      maxThrust: 56e4,
+      // 280 kN × 2 boosters
+      isp: 230,
+      ispSL: 220,
+      thrustSL: 0.96,
       ignoreThrottle: true,
       // solid fuel — always full throttle
       radialMount: true,
@@ -201,12 +217,20 @@
       renderW: 36,
       renderH: 100,
       color: "#5a3a2a",
-      description: "Pair of solid boosters mounted on the sides. 454 kN total, always full thrust."
+      description: "Pair of solid boosters mounted on the sides. 560 kN total, always full thrust.",
+      maxTemperature: 1800,
+      heatResistance: 0.5
     }
   };
   var _nextId = 1;
   var PartInstance = class _PartInstance {
     constructor(type, slotIndex) {
+      /** Current temperature in Kelvin (ambient = 293 K) */
+      this.currentTemperature = 293;
+      /** Heat damage accumulator 0–1; reaches 1 when part is destroyed */
+      this.heatDamage = 0;
+      /** True when heat damage has destroyed this part */
+      this.isDestroyed = false;
       this.id = `part_${_nextId++}`;
       this.def = PART_CATALOGUE[type];
       this.fuelRemaining = this.def.maxFuelMass;
@@ -218,13 +242,13 @@
     get currentMass() {
       return this.def.dryMass + this.fuelRemaining;
     }
-    /** True if this part can produce thrust (engine + active) */
+    /** True if this part can produce thrust (engine + active + not destroyed) */
     get isThrusting() {
-      return (this.def.type === 3 /* ENGINE */ || this.def.type === 4 /* ENGINE_VACUUM */ || this.def.type === 8 /* SRB */) && this.isActive;
+      return (this.def.type === 3 /* ENGINE */ || this.def.type === 4 /* ENGINE_VACUUM */ || this.def.type === 8 /* SRB */) && this.isActive && !this.isDestroyed;
     }
-    /** True if this part is a fuel tank that still has propellant */
+    /** True if this part is a fuel tank that still has propellant and is intact */
     get hasFuel() {
-      return this.def.maxFuelMass > 0 && this.fuelRemaining > 0;
+      return this.def.maxFuelMass > 0 && this.fuelRemaining > 0 && !this.isDestroyed;
     }
     /** Drain up to `amount` kg of fuel, returns how much was actually drained */
     drainFuel(amount) {
@@ -239,6 +263,9 @@
       copy.fuelRemaining = this.fuelRemaining;
       copy.isActive = this.isActive;
       copy.stageIndex = this.stageIndex;
+      copy.currentTemperature = this.currentTemperature;
+      copy.heatDamage = this.heatDamage;
+      copy.isDestroyed = this.isDestroyed;
       return copy;
     }
   };
@@ -263,6 +290,10 @@
   var REACTION_WHEEL_TORQUE = 2e5;
   var GIMBAL_TORQUE_COEFF = 6e4;
   var ANGULAR_DAMPING = 0.985;
+  var HEAT_COEFF = 7e-5;
+  var HEAT_COOLING = 0.05;
+  var HEAT_DESTROY_TIME = 8;
+  var MAX_HEAT_FLUX = 36e4;
   var PhysicsEngine = class {
     constructor(atmo) {
       /** Accumulated mission elapsed time (seconds) */
@@ -279,7 +310,10 @@
         dragForce: 0,
         thrustForce: 0,
         mach: 0,
-        atmoLayerName: "TROPOSPHERE"
+        atmoLayerName: "TROPOSPHERE",
+        airflowDir: { x: 0, y: -1 },
+        heatFlux: 0,
+        noseExposure: 0
       };
       this.atmo = atmo;
     }
@@ -359,6 +393,47 @@
       body.angVel *= ANGULAR_DAMPING;
       body.angle += body.angVel * dt;
       const heatingIntensity = this.atmo.getHeatingIntensity(altitude, speed);
+      const airflowDir = speed > 0 ? { x: -body.vel.x / speed, y: -body.vel.y / speed } : { x: 0, y: -1 };
+      const noseExposure = vec2.dot(noseDir, airflowDir);
+      const exposure = Math.abs(noseExposure);
+      const heatFlux = rho > 0 ? HEAT_COEFF * rho * speed * speed * speed : 0;
+      if (heatFlux > 500 && exposure > 0.05) {
+        const windwardFirst = noseExposure < 0 ? [...rocket.parts].sort((a, b) => b.slotIndex - a.slotIndex) : [...rocket.parts].sort((a, b) => a.slotIndex - b.slotIndex);
+        let passthrough = exposure;
+        for (const part of windwardFirst) {
+          if (part.isDestroyed)
+            continue;
+          const partHeat = heatFlux * passthrough;
+          const dT = partHeat * (1 - part.def.heatResistance) / Math.max(part.currentMass, 50) * dt;
+          part.currentTemperature += dT;
+          const excess = part.currentTemperature - 293;
+          if (excess > 0) {
+            part.currentTemperature -= HEAT_COOLING * excess * dt;
+            part.currentTemperature = Math.max(293, part.currentTemperature);
+          }
+          passthrough *= Math.max(0, 1 - part.def.heatResistance * 0.92);
+          if (passthrough < 5e-3)
+            break;
+          if (part.currentTemperature > part.def.maxTemperature) {
+            part.heatDamage += dt / HEAT_DESTROY_TIME;
+            if (part.heatDamage >= 1) {
+              part.isDestroyed = true;
+            }
+          } else {
+            part.heatDamage = Math.max(0, part.heatDamage - dt * 0.05);
+          }
+        }
+      } else if (heatFlux <= 100) {
+        for (const part of rocket.parts) {
+          if (part.isDestroyed)
+            continue;
+          const excess = part.currentTemperature - 293;
+          if (excess > 0) {
+            part.currentTemperature -= HEAT_COOLING * 0.5 * excess * dt;
+            part.currentTemperature = Math.max(293, part.currentTemperature);
+          }
+        }
+      }
       const mach = soundSpeed > 0 ? speed / soundSpeed : 0;
       const atmoLayerName = this.atmo.getLayerName(altitude);
       const verticalSpeed = vec2.dot(body.vel, radial);
@@ -375,7 +450,10 @@
         dragForce: dragForceMag,
         thrustForce: thrustMag,
         mach,
-        atmoLayerName
+        atmoLayerName,
+        airflowDir,
+        heatFlux,
+        noseExposure
       };
     }
     // ─── Utility Methods ────────────────────────────────────────────────────────
@@ -440,7 +518,10 @@
         dragForce: 0,
         thrustForce: 0,
         mach: 0,
-        atmoLayerName: "TROPOSPHERE"
+        atmoLayerName: "TROPOSPHERE",
+        airflowDir: { x: 0, y: -1 },
+        heatFlux: 0,
+        noseExposure: 0
       };
     }
     /**
@@ -698,6 +779,10 @@
     get isOnGround() {
       return !this.hasLaunched;
     }
+    /** True if any critical structural part (pod or tank) has been heat-destroyed */
+    get hasDestroyedCriticalPart() {
+      return this.parts.some((p) => p.isDestroyed && (p.def.type === 0 /* COMMAND_POD */ || p.def.type === 1 /* FUEL_TANK_S */ || p.def.type === 2 /* FUEL_TANK_L */));
+    }
     // ─── Launch Initialisation ──────────────────────────────────────────────────
     /**
      * Place the rocket on the launchpad.
@@ -717,6 +802,9 @@
         if (part.def.type === 3 /* ENGINE */ || part.def.type === 4 /* ENGINE_VACUUM */ || part.def.type === 8 /* SRB */) {
           part.isActive = false;
         }
+        part.currentTemperature = 293;
+        part.heatDamage = 0;
+        part.isDestroyed = false;
       }
     }
     // ─── Cloning (for trajectory prediction) ─────────────────────────────────
@@ -968,11 +1056,11 @@
         this._drawExhaustPlume(rocket, partScale, throttle);
       }
       this._drawRocketParts(rocket, partScale);
-      if (frame.heatingIntensity > 0.01) {
-        this._drawHeatGlow(rocket, partScale, frame.heatingIntensity);
+      if (frame.dynamicPressure > 5e3 && Math.abs(frame.noseExposure) > 0.05) {
+        this._drawAscentAero(rocket, partScale, frame);
       }
-      if (frame.heatingIntensity > 0.3 && frame.speed > 3e3) {
-        this._drawPlasma(rocket, partScale, frame.heatingIntensity);
+      if (frame.heatFlux > 200 && Math.abs(frame.noseExposure) > 0.05) {
+        this._drawAeroHeating(rocket, partScale, frame);
       }
       ctx.restore();
     }
@@ -1173,14 +1261,21 @@
           const sideOffset = mainHW + radGap + w / 2;
           for (const side of [-1, 1]) {
             const bx = side * sideOffset - w / 2;
-            ctx.fillStyle = part.def.color;
-            this._roundRect(bx, y, w, h, 3 * scale);
-            ctx.fill();
-            ctx.strokeStyle = "rgba(255,255,255,0.15)";
-            ctx.lineWidth = 1 * scale;
-            this._roundRect(bx, y, w, h, 3 * scale);
-            ctx.stroke();
-            this._drawPartDecoration(part.def.type, bx, y, w, h, scale, part);
+            if (part.isDestroyed) {
+              ctx.fillStyle = "#1a1008";
+              this._roundRect(bx, y, w, h, 3 * scale);
+              ctx.fill();
+            } else {
+              ctx.fillStyle = part.def.color;
+              this._roundRect(bx, y, w, h, 3 * scale);
+              ctx.fill();
+              ctx.strokeStyle = "rgba(255,255,255,0.15)";
+              ctx.lineWidth = 1 * scale;
+              this._roundRect(bx, y, w, h, 3 * scale);
+              ctx.stroke();
+              this._drawPartDecoration(part.def.type, bx, y, w, h, scale, part);
+              this._drawPartHeatGlow(ctx, bx, y, w, h, part.currentTemperature, scale);
+            }
           }
           ctx.strokeStyle = "rgba(160,170,180,0.55)";
           ctx.lineWidth = 2 * scale;
@@ -1195,14 +1290,21 @@
           }
         } else {
           const x = -w / 2;
-          ctx.fillStyle = part.def.color;
-          this._roundRect(x, y, w, h, 3 * scale);
-          ctx.fill();
-          ctx.strokeStyle = "rgba(255,255,255,0.15)";
-          ctx.lineWidth = 1 * scale;
-          this._roundRect(x, y, w, h, 3 * scale);
-          ctx.stroke();
-          this._drawPartDecoration(part.def.type, x, y, w, h, scale, part);
+          if (part.isDestroyed) {
+            ctx.fillStyle = "#1a1008";
+            this._roundRect(x, y, w, h, 3 * scale);
+            ctx.fill();
+          } else {
+            ctx.fillStyle = part.def.color;
+            this._roundRect(x, y, w, h, 3 * scale);
+            ctx.fill();
+            ctx.strokeStyle = "rgba(255,255,255,0.15)";
+            ctx.lineWidth = 1 * scale;
+            this._roundRect(x, y, w, h, 3 * scale);
+            ctx.stroke();
+            this._drawPartDecoration(part.def.type, x, y, w, h, scale, part);
+            this._drawPartHeatGlow(ctx, x, y, w, h, part.currentTemperature, scale);
+          }
         }
         yBottom -= h;
       }
@@ -1398,53 +1500,273 @@
       }
       ctx.restore();
     }
-    // ─── Heat Glow ────────────────────────────────────────────────────────────
-    _drawHeatGlow(_rocket, scale, intensity) {
-      const ctx = this.ctx;
-      const glowR = (80 + intensity * 200) * scale;
-      const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, glowR);
-      const alpha = Math.min(intensity * 0.85, 0.75);
-      grad.addColorStop(0, `rgba(255,220,80,${alpha})`);
-      grad.addColorStop(0.3, `rgba(255,100,0,${alpha * 0.6})`);
-      grad.addColorStop(0.7, `rgba(200,0,0,${alpha * 0.2})`);
-      grad.addColorStop(1, "rgba(200,0,0,0)");
+    // ─── Per-part Temperature Glow ───────────────────────────────────────────
+    _drawPartHeatGlow(ctx, x, y, w, h, temp, _scale) {
+      if (temp < 450)
+        return;
+      const t = Math.min((temp - 450) / 1550, 1);
+      let r, g, b, a;
+      if (t < 0.33) {
+        const u = t / 0.33;
+        r = 255;
+        g = Math.round(120 - u * 80);
+        b = 0;
+        a = 0.18 + u * 0.18;
+      } else if (t < 0.66) {
+        const u = (t - 0.33) / 0.33;
+        r = 255;
+        g = Math.round(40 - u * 40);
+        b = Math.round(u * 60);
+        a = 0.36 + u * 0.18;
+      } else {
+        const u = (t - 0.66) / 0.34;
+        r = 255;
+        g = Math.round(u * 180);
+        b = Math.round(60 + u * 195);
+        a = 0.54 + u * 0.3;
+      }
       ctx.save();
       ctx.globalCompositeOperation = "screen";
-      ctx.beginPath();
-      ctx.arc(0, 0, glowR, 0, Math.PI * 2);
-      ctx.fillStyle = grad;
+      ctx.fillStyle = `rgba(${r},${g},${b},${a.toFixed(2)})`;
+      this._roundRect(x, y, w, h, 2);
       ctx.fill();
+      ctx.restore();
+    }
+    static {
+      // ─── Ascent Aerodynamic Compression ─────────────────────────────────────
+      /** Dynamic pressure thresholds (Pa) governing ascent visual tiers */
+      this.Q_STREAK_START = 5e3;
+    }
+    static {
+      // subtle haze begins
+      this.Q_STREAK_FULL = 25e3;
+    }
+    static {
+      // full white/blue streaks
+      this.Q_ORANGE_START = 45e3;
+    }
+    static {
+      // orange tint + Max-Q warning
+      this.Q_EXTREME = 8e4;
+    }
+    // extreme orange sparks
+    /**
+     * Draw ascent-phase aerodynamic compression effects in local rocket space.
+     * Effect tiers:
+     *   5–25 kPa  : faint blue/white compression haze + thin streaks
+     *  25–45 kPa  : stronger streaks + edge lines
+     *  45–80 kPa  : haze turns orange, streaks turn orange, sparks appear
+     */
+    _drawAscentAero(rocket, scale, frame) {
+      const q = frame.dynamicPressure;
+      if (q < _Renderer.Q_STREAK_START)
+        return;
+      const noseExp = frame.noseExposure;
+      const exposure = Math.abs(noseExp);
+      if (exposure < 0.05)
+        return;
+      const ctx = this.ctx;
+      const t = this.time;
+      const totalH = rocket.parts.reduce((s, p) => s + p.def.renderH * scale, 0);
+      const halfH = totalH / 2;
+      const maxW = rocket.parts.reduce((m, p) => Math.max(m, p.def.renderW * scale), 44 * scale);
+      const noseIsWindward = noseExp < 0;
+      const windwardY = noseIsWindward ? -halfH : halfH;
+      const streamSgn = noseIsWindward ? 1 : -1;
+      const qFrac = Math.min((q - _Renderer.Q_STREAK_START) / (_Renderer.Q_EXTREME - _Renderer.Q_STREAK_START), 1);
+      const qOrange = Math.max(0, (q - _Renderer.Q_ORANGE_START) / (_Renderer.Q_EXTREME - _Renderer.Q_ORANGE_START));
+      const frand = (seed) => {
+        let s = (seed ^ 4027435774) >>> 0;
+        s = Math.imul(s ^ s >>> 16, 73244475) >>> 0;
+        return (s ^ s >>> 16) / 4294967295;
+      };
+      ctx.save();
+      ctx.globalCompositeOperation = "screen";
+      {
+        const hazeR = maxW * (0.45 + qFrac * 0.95);
+        const hazeOY = windwardY - streamSgn * hazeR * 0.3;
+        const hazeA = qFrac * 0.17 * exposure;
+        const haze = ctx.createRadialGradient(0, hazeOY, 0, 0, windwardY, hazeR);
+        if (qOrange <= 0) {
+          haze.addColorStop(0, `rgba(195,228,255,${(hazeA * 1.25).toFixed(2)})`);
+          haze.addColorStop(0.45, `rgba(110,175,255,${(hazeA * 0.5).toFixed(2)})`);
+          haze.addColorStop(1, "rgba(55,115,255,0)");
+        } else {
+          const ob = Math.min(qOrange, 1);
+          const g = Math.round(228 - ob * 150);
+          haze.addColorStop(0, `rgba(255,${g},${Math.round(255 * (1 - ob))},${(hazeA * 1.35).toFixed(2)})`);
+          haze.addColorStop(0.4, `rgba(255,${Math.round(g * 0.45)},0,${(hazeA * 0.45).toFixed(2)})`);
+          haze.addColorStop(1, "rgba(200,30,0,0)");
+        }
+        ctx.beginPath();
+        ctx.ellipse(0, windwardY, hazeR * 0.5, hazeR, 0, 0, Math.PI * 2);
+        ctx.fillStyle = haze;
+        ctx.fill();
+      }
+      {
+        const numStreaks = Math.floor(2 + qFrac * 11);
+        const streakLen = totalH * (0.22 + qFrac * 0.62);
+        const halfSpread = maxW * 0.56;
+        for (let i = 0; i < numStreaks; i++) {
+          const sp = 1.7 + frand(i * 11) * 2.6;
+          const phase = (t * sp + frand(i * 7 + 1)) % 1;
+          if (phase > 0.85)
+            continue;
+          const alpha = qFrac * exposure * (0.48 - phase * 0.55);
+          if (alpha < 0.015)
+            continue;
+          const xOff = (frand(i * 19 + 2) - 0.5) * halfSpread * 2;
+          const xEnd = xOff * (0.22 + frand(i * 29 + 3) * 0.44);
+          const startY = windwardY + streamSgn * phase * streakLen * 0.06;
+          const endY = windwardY + streamSgn * phase * streakLen;
+          let stroke;
+          if (qOrange <= 0) {
+            stroke = `hsla(${200 + frand(i) * 22},68%,88%,${alpha.toFixed(2)})`;
+          } else {
+            const hue = Math.round(200 - Math.min(qOrange, 1) * 172);
+            stroke = `hsla(${hue},90%,80%,${alpha.toFixed(2)})`;
+          }
+          ctx.beginPath();
+          ctx.moveTo(xOff, startY);
+          ctx.quadraticCurveTo(xOff * 0.52, (startY + endY) * 0.5, xEnd, endY);
+          ctx.strokeStyle = stroke;
+          ctx.lineWidth = (0.4 + frand(i * 37) * 0.9) * scale;
+          ctx.stroke();
+        }
+      }
+      if (qFrac > 0.15) {
+        const edgeA = (qFrac - 0.15) / 0.85 * 0.32 * exposure;
+        const bodyHW = maxW * 0.5;
+        for (const side of [-1, 1]) {
+          const ex = side * bodyHW;
+          const gStart = windwardY;
+          const gEnd = windwardY + streamSgn * halfH * 1.6;
+          const eGrad = ctx.createLinearGradient(0, gStart, 0, gEnd);
+          if (qOrange <= 0) {
+            eGrad.addColorStop(0, `rgba(180,218,255,${edgeA.toFixed(2)})`);
+            eGrad.addColorStop(0.55, `rgba(110,170,255,${(edgeA * 0.38).toFixed(2)})`);
+            eGrad.addColorStop(1, "rgba(60,110,255,0)");
+          } else {
+            const ob = Math.min(qOrange, 1);
+            eGrad.addColorStop(0, `rgba(255,${Math.round(200 - ob * 155)},55,${edgeA.toFixed(2)})`);
+            eGrad.addColorStop(0.5, `rgba(255,70,0,${(edgeA * 0.32).toFixed(2)})`);
+            eGrad.addColorStop(1, "rgba(220,30,0,0)");
+          }
+          ctx.beginPath();
+          ctx.moveTo(ex, -halfH);
+          ctx.lineTo(ex, halfH);
+          ctx.strokeStyle = eGrad;
+          ctx.lineWidth = (0.7 + qFrac * 1.3) * scale;
+          ctx.stroke();
+        }
+      }
+      if (qOrange > 0) {
+        const sparkCount = Math.floor(qOrange * 5);
+        for (let i = 0; i < sparkCount; i++) {
+          const sp = 3 + frand(i * 41) * 4;
+          const phase = (t * sp + frand(i * 53)) % 1;
+          if (phase > 0.46)
+            continue;
+          const sx = (frand(i * 61 + 7) - 0.5) * maxW * 0.72;
+          const sy = windwardY + streamSgn * phase * maxW * 1.05;
+          const sr = (0.65 + frand(i * 71) * 1.9) * scale;
+          const sa = Math.min((0.46 - phase) * 2.2 * qOrange, 0.92);
+          ctx.beginPath();
+          ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(255,${Math.round(90 + frand(i * 83) * 90)},0,${sa.toFixed(2)})`;
+          ctx.fill();
+        }
+      }
       ctx.globalCompositeOperation = "source-over";
       ctx.restore();
     }
-    // ─── Plasma Effect (reentry) ──────────────────────────────────────────────
-    _drawPlasma(_rocket, scale, intensity) {
+    // ─── Directional Aerodynamic Heating ─────────────────────────────────────
+    /**
+     * Draw windward-side heating effect in local rocket space (after ctx.translate+rotate).
+     * noseExposure < 0 → nose (local y = -halfH) is windward.
+     * noseExposure > 0 → tail (local y = +halfH) is windward.
+     */
+    _drawAeroHeating(rocket, scale, frame) {
       const ctx = this.ctx;
       const t = this.time;
-      const streakR = (50 + intensity * 150) * scale;
+      const intensity = Math.min(frame.heatFlux / MAX_HEAT_FLUX, 1);
+      const exposure = Math.abs(frame.noseExposure);
+      if (intensity < 0.01 || exposure < 0.05)
+        return;
+      const totalH = rocket.parts.reduce((s, p) => s + p.def.renderH * scale, 0);
+      const halfH = totalH / 2;
+      const maxW = rocket.parts.reduce((m, p) => Math.max(m, p.def.renderW * scale), 44 * scale);
+      const noseIsWindward = frame.noseExposure < 0;
+      const windwardY = noseIsWindward ? -halfH : halfH;
+      const streamSgn = noseIsWindward ? 1 : -1;
       ctx.save();
       ctx.globalCompositeOperation = "screen";
-      for (let i = 0; i < 14; i++) {
-        const phase = i / 14 * Math.PI * 2 + t * 4.5;
-        const spread = 0.4 + intensity * 0.6;
-        const startA = phase - spread;
-        const endA = phase + spread;
-        const r = streakR * (0.6 + Math.sin(t * 7 + i) * 0.4);
-        const hue = 180 + Math.sin(t * 3 + i) * 40;
-        const alpha = intensity * (0.5 + Math.sin(t * 5 + i * 1.3) * 0.3);
+      const glowRadius = maxW * (0.8 + intensity * 1.4);
+      const glowOffY = windwardY - streamSgn * glowRadius * 0.35;
+      const shock = ctx.createRadialGradient(0, glowOffY, 0, 0, windwardY, glowRadius);
+      if (intensity < 0.35) {
+        const a = intensity * 2.5;
+        shock.addColorStop(0, `rgba(255,200,60,${(a * 0.9).toFixed(2)})`);
+        shock.addColorStop(0.45, `rgba(255,80,0,${(a * 0.5).toFixed(2)})`);
+        shock.addColorStop(1, "rgba(255,40,0,0)");
+      } else if (intensity < 0.65) {
+        const a = 0.7 + (intensity - 0.35) * 0.6;
+        shock.addColorStop(0, `rgba(255,120,60,${a.toFixed(2)})`);
+        shock.addColorStop(0.35, `rgba(255,20,80,${(a * 0.65).toFixed(2)})`);
+        shock.addColorStop(1, "rgba(200,0,120,0)");
+      } else {
+        const a = 0.88;
+        shock.addColorStop(0, `rgba(255,240,255,${a.toFixed(2)})`);
+        shock.addColorStop(0.25, `rgba(200,40,255,${(a * 0.75).toFixed(2)})`);
+        shock.addColorStop(0.7, `rgba(80,0,200,${(a * 0.3).toFixed(2)})`);
+        shock.addColorStop(1, "rgba(40,0,100,0)");
+      }
+      ctx.beginPath();
+      ctx.ellipse(0, windwardY, glowRadius * 0.65, glowRadius, 0, 0, Math.PI * 2);
+      ctx.fillStyle = shock;
+      ctx.fill();
+      const numStreaks = Math.floor(5 + intensity * 12);
+      const streakLen = totalH * (0.4 + intensity * 1.2);
+      const halfSpread = maxW * 0.55;
+      const frand = (seed) => {
+        let s = (seed ^ 3735928559) >>> 0;
+        s = Math.imul(s ^ s >>> 16, 73244475) >>> 0;
+        return (s ^ s >>> 16) / 4294967295;
+      };
+      for (let i = 0; i < numStreaks; i++) {
+        const speed = 1.5 + frand(i * 7) * 2.5;
+        const phase = (t * speed + frand(i * 13)) % 1;
+        if (phase > 0.82)
+          continue;
+        const alpha = intensity * exposure * (0.7 - phase * 0.85);
+        if (alpha < 0.02)
+          continue;
+        const xOff = (frand(i * 17 + 1) - 0.5) * halfSpread * 2;
+        const xEnd = xOff * (0.3 + frand(i * 23) * 0.5);
+        const startY = windwardY + streamSgn * phase * streakLen * 0.08;
+        const endY = windwardY + streamSgn * phase * streakLen;
+        const hue = intensity < 0.35 ? 25 + frand(i) * 15 : intensity < 0.65 ? 355 + frand(i) * 20 : 285 + frand(i) * 40;
+        const sat = intensity < 0.65 ? 100 : 80 + frand(i * 3) * 20;
         ctx.beginPath();
-        ctx.arc(0, 0, r, startA, endA);
-        ctx.strokeStyle = `hsla(${hue},100%,75%,${alpha.toFixed(2)})`;
-        ctx.lineWidth = (3 + Math.sin(t * 11 + i) * 2) * scale;
+        ctx.moveTo(xOff, startY);
+        ctx.quadraticCurveTo(xOff * 0.6, (startY + endY) / 2, xEnd, endY);
+        ctx.strokeStyle = `hsla(${hue},${sat}%,72%,${alpha.toFixed(2)})`;
+        ctx.lineWidth = (0.8 + frand(i * 31) * 1.4) * scale;
         ctx.stroke();
       }
-      const shockGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, streakR * 0.5);
-      shockGrad.addColorStop(0, `rgba(200,240,255,${intensity * 0.5})`);
-      shockGrad.addColorStop(1, "rgba(0,200,255,0)");
-      ctx.beginPath();
-      ctx.arc(0, 0, streakR * 0.5, 0, Math.PI * 2);
-      ctx.fillStyle = shockGrad;
-      ctx.fill();
+      if (intensity > 0.2) {
+        const coreR = maxW * 0.18 * intensity;
+        const pulse = 0.85 + Math.sin(t * 18) * 0.15;
+        const coreA = intensity * exposure * 0.9 * pulse;
+        const coreGrad = ctx.createRadialGradient(0, windwardY, 0, 0, windwardY, coreR);
+        coreGrad.addColorStop(0, `rgba(255,255,255,${coreA.toFixed(2)})`);
+        coreGrad.addColorStop(0.5, intensity > 0.6 ? `rgba(220,120,255,${(coreA * 0.6).toFixed(2)})` : `rgba(255,160,60,${(coreA * 0.6).toFixed(2)})`);
+        coreGrad.addColorStop(1, "rgba(255,0,0,0)");
+        ctx.beginPath();
+        ctx.arc(0, windwardY, coreR, 0, Math.PI * 2);
+        ctx.fillStyle = coreGrad;
+        ctx.fill();
+      }
       ctx.globalCompositeOperation = "source-over";
       ctx.restore();
     }
@@ -1639,7 +1961,11 @@
         const ry = panelY + 22 + i * 22;
         ctx.fillStyle = THEME.textDim;
         ctx.fillText(label, panelX + 10, ry);
-        ctx.fillStyle = THEME.text;
+        if (label === "Q") {
+          ctx.fillStyle = frame.dynamicPressure > _Renderer.Q_ORANGE_START ? THEME.danger : frame.dynamicPressure > _Renderer.Q_STREAK_FULL ? THEME.warning : THEME.text;
+        } else {
+          ctx.fillStyle = THEME.text;
+        }
         ctx.fillText(value, panelX + 60, ry);
       });
       const fuelX = W - 200, fuelY = 16, fuelW = 184, fuelH = 100;
@@ -1689,15 +2015,27 @@
       ctx.fillRect(thrX - 12, thrY + 120 * (1 - throttle), 24, 120 * throttle);
       ctx.fillStyle = THEME.text;
       ctx.fillText(`${Math.round(throttle * 100)}%`, thrX, thrY + 134);
-      if (frame.heatingIntensity > 0.1) {
-        const heatAlpha = Math.min(frame.heatingIntensity, 1);
-        ctx.fillStyle = `rgba(255,80,0,${(heatAlpha * 0.25).toFixed(2)})`;
+      if (frame.dynamicPressure > _Renderer.Q_ORANGE_START) {
+        const qFrac = Math.min((frame.dynamicPressure - _Renderer.Q_ORANGE_START) / 4e4, 1);
+        const pulse = 0.7 + Math.sin(this.time * 9) * 0.3;
+        const qAlpha = qFrac * pulse * 0.88;
+        ctx.fillStyle = `rgba(80,120,255,${(qFrac * 0.1).toFixed(2)})`;
         ctx.fillRect(0, 0, W, H);
-        ctx.fillStyle = `rgba(255,140,0,${heatAlpha.toFixed(2)})`;
+        ctx.fillStyle = `rgba(255,${Math.round(190 - qFrac * 90)},0,${qAlpha.toFixed(2)})`;
         ctx.font = "bold 12px Courier New";
         ctx.textAlign = "center";
+        ctx.fillText("MAX-Q", W / 2, H / 2 + 8);
+      }
+      const heatIntensity = Math.min(frame.heatFlux / MAX_HEAT_FLUX, 1);
+      if (heatIntensity > 0.08) {
+        ctx.fillStyle = `rgba(255,60,0,${(heatIntensity * 0.22).toFixed(2)})`;
+        ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = `rgba(255,140,0,${Math.min(heatIntensity * 1.2, 1).toFixed(2)})`;
+        ctx.font = "bold 12px Courier New";
+        ctx.textAlign = "center";
+        const noShield = heatIntensity > 0.55;
         ctx.fillText(
-          frame.heatingIntensity > 0.7 ? "\u26A0 CRITICAL HEATING \u26A0" : "\u26A0 HEATING",
+          noShield ? "\u26A0 CRITICAL HEATING \u26A0" : "\u26A0 HEATING",
           W / 2,
           H / 2 - 20
         );
@@ -2980,15 +3318,17 @@
       );
     }
     _updateFlight(rawDt) {
-      this.accumulator += rawDt;
+      const warpFactor = this.WARP_LEVELS[this.warpIndex];
+      this.accumulator += rawDt * warpFactor;
+      const maxSteps = MAX_PHYSICS_STEPS * warpFactor;
       let steps = 0;
-      while (this.accumulator >= PHYSICS_DT && steps < MAX_PHYSICS_STEPS) {
+      while (this.accumulator >= PHYSICS_DT && steps < maxSteps) {
         this.rocket.body.mass = this.rocket.getTotalMass();
         this.physics.step(this.rocket.body, this.rocket, PHYSICS_DT);
         this.accumulator -= PHYSICS_DT;
         steps++;
       }
-      if (this.accumulator > PHYSICS_DT * MAX_PHYSICS_STEPS) {
+      if (this.accumulator > PHYSICS_DT * maxSteps) {
         this.accumulator = 0;
       }
       this._checkFlightEvents();
@@ -3005,7 +3345,8 @@
           frame,
           this.throttle,
           this.rocket.currentStage,
-          this.physics.missionTime
+          this.physics.missionTime,
+          warpFactor
         );
       }
     }
@@ -3017,13 +3358,21 @@
         this.throttle = Math.min(1, this.throttle + THROTTLE_RATE * dt);
       if (this.input.throttleDown)
         this.throttle = Math.max(0, this.throttle - THROTTLE_RATE * dt);
-      if (!this.isMapOpen) {
+      if (!this.isMapOpen && this.warpIndex === 0) {
         if (this.input.rotateLeft) {
           this.physics.applyRotation(this.rocket.body, -1, dt, this.rocket.hasCommandPod);
         }
         if (this.input.rotateRight) {
           this.physics.applyRotation(this.rocket.body, 1, dt, this.rocket.hasCommandPod);
         }
+      }
+      if (this.warpUpPressed) {
+        this.warpUpPressed = false;
+        this.warpIndex = Math.min(this.warpIndex + 1, this.WARP_LEVELS.length - 1);
+      }
+      if (this.warpDownPressed) {
+        this.warpDownPressed = false;
+        this.warpIndex = Math.max(this.warpIndex - 1, 0);
       }
       this.rocket.throttle = this.throttle;
       if (this.stagePressed) {
@@ -3076,11 +3425,11 @@
           );
         }
       }
-      if (lastFrame.heatingIntensity >= 0.99) {
+      if (!this.rocket.isDestroyed && this.rocket.hasDestroyedCriticalPart) {
         this.rocket.isDestroyed = true;
         this._showMessage(
           "ROCKET DESTROYED",
-          "Burned up during re-entry!",
+          "Critical part burned through!",
           "OK",
           () => {
             this.showMessage = false;
@@ -3106,6 +3455,7 @@
       this.isMapOpen = false;
       this.accumulator = 0;
       this.showMessage = false;
+      this.warpIndex = 0;
       this._switchTo(4 /* FLIGHT */);
     }
     // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -3164,6 +3514,12 @@
             break;
           case "KeyM":
             this.mapPressed = true;
+            break;
+          case "Comma":
+            this.warpDownPressed = true;
+            break;
+          case "Period":
+            this.warpUpPressed = true;
             break;
           case "Escape":
             if (this.screen === 2 /* VAB */) {
@@ -3265,6 +3621,14 @@
           case 4 /* FLIGHT */:
             if (this.isMapOpen) {
               this.mapView.handleClick(mx, my);
+            } else {
+              const wd = this.renderer.warpDownBtn;
+              const wu = this.renderer.warpUpBtn;
+              if (mx >= wd.x && mx <= wd.x + wd.w && my >= wd.y && my <= wd.y + wd.h) {
+                this.warpIndex = Math.max(this.warpIndex - 1, 0);
+              } else if (mx >= wu.x && mx <= wu.x + wu.w && my >= wu.y && my <= wu.y + wu.h) {
+                this.warpIndex = Math.min(this.warpIndex + 1, this.WARP_LEVELS.length - 1);
+              }
             }
             break;
         }
