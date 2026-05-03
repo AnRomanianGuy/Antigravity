@@ -1,0 +1,18 @@
+image: node:latest
+
+pages:
+  stage: deploy
+  script:
+  - npm install
+  - npm run build
+  - rm -rf public
+  - mkdir public
+  - cp index.html public/        # Copiază pagina principală
+  - cp -r dist/* public/         # Copiază codul compilat din src -> dist
+  # Dacă ai imagini sau alte fișiere în src pe care build-ul le omite:
+  - cp -r src/assets public/     # (Opțional) Copiază și resursele extra
+  artifacts:
+    paths:
+      - public
+  only:
+    - main
