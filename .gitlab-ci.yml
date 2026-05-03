@@ -1,10 +1,18 @@
-# The Docker image that will be used to build your app
-image: sa
-create-pages:
-  pages:
-    # The folder that contains the files to be exposed at the Page URL
-    publish: public
-  rules:
-    # This ensures that only pushes to the default branch will trigger
-    # a pages deploy
-    - if: $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH
+image: node:latest
+
+pages:
+  stage: deploy
+  script:
+  - npm install
+  - npm run build
+  - rm -rf public
+  - mkdir public
+  - cp index.html public/        # Copiază pagina principală
+  - cp -r dist/* public/         # Copiază codul compilat din src -> dist
+  # Dacă ai imagini sau alte fișiere în src pe care build-ul le omite:
+  - cp -r src/assets public/     # (Opțional) Copiază și resursele extra
+  artifacts:
+    paths:
+      - public
+  only:
+    - main
