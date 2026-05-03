@@ -926,6 +926,9 @@
     constructor(ctx) {
       /** Elapsed time in seconds — used for animated effects */
       this.time = 0;
+      /** Hit areas for warp buttons — updated each HUD render, read by Game.ts */
+      this.warpDownBtn = { x: 0, y: 0, w: 28, h: 28 };
+      this.warpUpBtn = { x: 0, y: 0, w: 28, h: 28 };
       this.ctx = ctx;
       this.W = ctx.canvas.width;
       this.H = ctx.canvas.height;
@@ -1612,7 +1615,7 @@
     /**
      * Draw the in-flight HUD overlay (screen-space, no transform needed).
      */
-    renderHUD(rocket, frame, throttle, currentStage, missionTime) {
+    renderHUD(rocket, frame, throttle, currentStage, missionTime, warpFactor = 1) {
       const ctx = this.ctx;
       const { W, H } = this;
       const panelX = 16, panelY = 16, panelW = 220, panelH = 202;
@@ -1699,12 +1702,39 @@
           H / 2 - 20
         );
       }
+      const warpPanelW = 160, warpPanelH = 44;
+      const warpPanelX = 16, warpPanelY = H - warpPanelH - 16;
+      this._drawPanel(warpPanelX, warpPanelY, warpPanelW, warpPanelH);
+      const btnW = 28, btnH = 28;
+      const btnY = warpPanelY + (warpPanelH - btnH) / 2;
+      this.warpDownBtn = { x: warpPanelX + 6, y: btnY, w: btnW, h: btnH };
+      this.warpUpBtn = { x: warpPanelX + warpPanelW - 6 - btnW, y: btnY, w: btnW, h: btnH };
+      const atMin = warpFactor === 1;
+      ctx.fillStyle = atMin ? "rgba(255,255,255,0.08)" : THEME.accentDim;
+      this._roundRect(this.warpDownBtn.x, this.warpDownBtn.y, btnW, btnH, 4);
+      ctx.fill();
+      ctx.fillStyle = atMin ? THEME.textDim : THEME.accent;
+      ctx.font = "bold 14px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("\u25C0", this.warpDownBtn.x + btnW / 2, this.warpDownBtn.y + 19);
+      const atMax = warpFactor === 10;
+      ctx.fillStyle = atMax ? "rgba(255,255,255,0.08)" : THEME.accentDim;
+      this._roundRect(this.warpUpBtn.x, this.warpUpBtn.y, btnW, btnH, 4);
+      ctx.fill();
+      ctx.fillStyle = atMax ? THEME.textDim : THEME.accent;
+      ctx.fillText("\u25B6", this.warpUpBtn.x + btnW / 2, this.warpUpBtn.y + 19);
+      ctx.fillStyle = warpFactor > 1 ? THEME.warning : THEME.textDim;
+      ctx.font = warpFactor > 1 ? "bold 14px Courier New" : "12px Courier New";
+      ctx.fillText(`\xD7${warpFactor}`, warpPanelX + warpPanelW / 2, warpPanelY + 20);
+      ctx.fillStyle = THEME.textDim;
+      ctx.font = "9px Courier New";
+      ctx.fillText("WARP [,  .]", warpPanelX + warpPanelW / 2, warpPanelY + 35);
       if (missionTime < 10) {
         const alpha = Math.max(0, 1 - missionTime / 8);
         ctx.fillStyle = `rgba(100,160,200,${alpha})`;
         ctx.font = "11px Courier New";
         ctx.textAlign = "right";
-        const hints = ["Shift/Ctrl \u2014 Throttle", "Z \u2014 Full  X \u2014 Cut", "A/D \u2014 Rotate", "SPACE \u2014 Stage", "M \u2014 Map"];
+        const hints = ["Shift/Ctrl \u2014 Throttle", "Z \u2014 Full  X \u2014 Cut", "A/D \u2014 Rotate", "SPACE \u2014 Stage", "M \u2014 Map", ". / , \u2014 Warp"];
         hints.forEach((h, i) => ctx.fillText(h, W - 20, H - 20 - i * 16));
       }
     }
@@ -2860,6 +2890,11 @@
       this.stagePressed = false;
       this.mapPressed = false;
       this.escPressed = false;
+      this.warpUpPressed = false;
+      this.warpDownPressed = false;
+      /** Time warp: index into WARP_LEVELS */
+      this.WARP_LEVELS = [1, 2, 5, 10];
+      this.warpIndex = 0;
       // ── Message overlay state ──────────────────────────────────────────────────
       this.showMessage = false;
       this.messageTitle = "";
