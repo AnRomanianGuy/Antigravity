@@ -105,15 +105,27 @@ export class UI {
   /** VAB: currently hovered palette part */
   private hoveredPaletteIdx = -1;
 
-  /** VAB: screen bounds of each rendered rocket part (for click-to-remove) */
+  /** VAB: screen bounds of each rendered rocket part */
   private vabPartBounds: Array<{id: string, x: number, y: number, w: number, h: number}> = [];
 
-  /** Staging: which stage column is hovered */
-  private hoveredStageCol = -1;
+  // ── VAB ghost / drag state ─────────────────────────────────────────────────
+  /** Part type currently being dragged (null = no ghost) */
+  vabGhostType: PartType | null = null;
+  /** Stage index carried with the ghost so re-placing preserves staging */
+  private vabGhostStageIndex = -1;
+  /** Insertion slot the ghost will snap to (0 = bottom of stack) */
+  private vabSnapSlot = 0;
+  /** Screen Y of the snap insertion line */
+  private vabSnapLineY = -1;
+  /** Build area geometry (set during renderVAB, read in mouse handlers) */
+  private vabBottomY   = 0;
+  private vabBuildX    = 0;
+  /** Y coordinate of each insertion gap: index i = slot i */
+  private vabGapYs: number[] = [];
 
-  /** Staging: dragged part (id) */
-  dragPartId = '';
-  dragStageTarget = -1;
+  // ── Staging ────────────────────────────────────────────────────────────────
+  /** Stage badge hit circles from the last renderStaging call */
+  private stagingBadgeBounds: Array<{partId: string, x: number, y: number, r: number}> = [];
 
   constructor(ctx: CanvasRenderingContext2D, renderer: Renderer) {
     this.ctx = ctx;
@@ -315,7 +327,7 @@ export class UI {
     ctx.fillStyle = THEME.panelBg;
     ctx.fillRect(0, 0, W, H);
 
-    // Left palette panel
+    // ── Left palette panel ─────────────────────────────────────────────────
     ctx.fillStyle = 'rgba(8,12,20,0.95)';
     ctx.fillRect(0, 0, this.VAB_PALETTE_W, H);
     ctx.strokeStyle = THEME.panelBorder;
@@ -325,76 +337,83 @@ export class UI {
     ctx.lineTo(this.VAB_PALETTE_W, H);
     ctx.stroke();
 
-    // Palette title
     ctx.fillStyle = THEME.accent;
     ctx.font = 'bold 13px Courier New';
     ctx.textAlign = 'center';
     ctx.fillText('PARTS', this.VAB_PALETTE_W / 2, 28);
 
-    // Part cards
+    const cardH = Math.min(62, (H - 60) / VAB_PALETTE.length);
     VAB_PALETTE.forEach((type, i) => {
       const def = PART_CATALOGUE[type];
-      const cy = 55 + i * 70;
+      const cy = 42 + i * (cardH + 4);
       const hovered = this.hoveredPaletteIdx === i;
+      const isGhost = this.vabGhostType === type;
 
-      ctx.fillStyle = hovered ? 'rgba(0,120,160,0.35)' : 'rgba(15,25,40,0.8)';
-      roundRect(ctx, 8, cy, this.VAB_PALETTE_W - 16, 62, 5);
+      ctx.fillStyle = isGhost ? 'rgba(0,180,220,0.30)' : hovered ? 'rgba(0,120,160,0.35)' : 'rgba(15,25,40,0.8)';
+      roundRect(ctx, 8, cy, this.VAB_PALETTE_W - 16, cardH, 5);
       ctx.fill();
-      ctx.strokeStyle = hovered ? THEME.accent : THEME.panelBorder;
-      ctx.lineWidth = 1;
-      roundRect(ctx, 8, cy, this.VAB_PALETTE_W - 16, 62, 5);
+      ctx.strokeStyle = isGhost ? THEME.accent : hovered ? THEME.accent : THEME.panelBorder;
+      ctx.lineWidth = isGhost ? 1.5 : 1;
+      roundRect(ctx, 8, cy, this.VAB_PALETTE_W - 16, cardH, 5);
       ctx.stroke();
 
-      // Colour swatch
+      const swH = Math.min(42, cardH - 8);
       ctx.fillStyle = def.color;
-      roundRect(ctx, 14, cy + 10, 22, 42, 3);
+      roundRect(ctx, 14, cy + (cardH - swH) / 2, 20, swH, 3);
       ctx.fill();
 
-      // Name + stats
-      ctx.fillStyle = hovered ? THEME.accent : THEME.text;
+      ctx.fillStyle = hovered || isGhost ? THEME.accent : THEME.text;
       ctx.font = '10px Courier New';
       ctx.textAlign = 'left';
-      ctx.fillText(def.name.length > 16 ? def.name.slice(0, 16) + '…' : def.name, 42, cy + 22);
+      ctx.fillText(def.name.length > 16 ? def.name.slice(0, 16) + '…' : def.name, 40, cy + cardH * 0.38);
 
       ctx.fillStyle = THEME.textDim;
       ctx.font = '9px Courier New';
-      ctx.fillText(`${(def.dryMass / 1000).toFixed(1)}t`, 42, cy + 36);
-      if (def.maxThrust > 0) {
-        ctx.fillText(`${(def.maxThrust / 1000).toFixed(0)}kN`, 80, cy + 36);
-      }
-      if (def.maxFuelMass > 0) {
-        ctx.fillText(`⛽${(def.maxFuelMass / 1000).toFixed(1)}t`, 42, cy + 48);
+      ctx.fillText(`${(def.dryMass / 1000).toFixed(1)}t`, 40, cy + cardH * 0.60);
+      if (def.maxThrust > 0) ctx.fillText(`${(def.maxThrust / 1000).toFixed(0)}kN`, 76, cy + cardH * 0.60);
+      if (def.maxFuelMass > 0) ctx.fillText(`⛽${(def.maxFuelMass / 1000).toFixed(1)}t`, 40, cy + cardH * 0.80);
+      if (def.ignoreThrottle) {
+        ctx.fillStyle = '#cc8822';
+        ctx.fillText('SOLID', 76, cy + cardH * 0.80);
       }
     });
 
-    // Click-to-add hint
-    ctx.fillStyle = THEME.textDim;
+    // Palette hint
+    ctx.fillStyle = this.vabGhostType !== null ? THEME.accent : THEME.textDim;
     ctx.font = '9px Courier New';
     ctx.textAlign = 'center';
-    ctx.fillText('Click to add to rocket', this.VAB_PALETTE_W / 2, H - 16);
+    ctx.fillText(
+      this.vabGhostType !== null ? 'Click build area to place' : 'Click to grab a part',
+      this.VAB_PALETTE_W / 2, H - 16,
+    );
 
-    // ── Build area ──────────────────────────────────────────────────────────
-    const buildX = this.VAB_PALETTE_W;
-    const buildW = W - buildX - 200;   // leave room for right info panel
+    // ── Build area ─────────────────────────────────────────────────────────
+    const buildX  = this.VAB_PALETTE_W;
+    const buildW  = W - buildX - 196;
+    const bottomY = H - 80;
+
+    // Store geometry for mouse handlers
+    this.vabBuildX  = buildX;
+    this.vabBottomY = bottomY;
 
     // Launchpad line
     ctx.strokeStyle = 'rgba(100,120,150,0.3)';
     ctx.setLineDash([8, 6]);
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(buildX, H - 80);
-    ctx.lineTo(buildX + buildW, H - 80);
+    ctx.moveTo(buildX, bottomY);
+    ctx.lineTo(buildX + buildW, bottomY);
     ctx.stroke();
     ctx.setLineDash([]);
 
     ctx.fillStyle = THEME.textDim;
     ctx.font = '10px Courier New';
     ctx.textAlign = 'center';
-    ctx.fillText('LAUNCHPAD', buildX + buildW / 2, H - 64);
+    ctx.fillText('LAUNCHPAD', buildX + buildW / 2, bottomY + 16);
 
-    // Rocket preview (draw using Renderer)
+    // Rocket preview
     if (rocket.parts.length > 0) {
-      this.vabPartBounds = this.renderer.renderVABRocket(rocket, buildX + buildW / 2, H - 80);
+      this.vabPartBounds = this.renderer.renderVABRocket(rocket, buildX + buildW / 2, bottomY, true);
     } else {
       this.vabPartBounds = [];
       ctx.fillStyle = THEME.textDim;
@@ -403,15 +422,39 @@ export class UI {
       ctx.fillText('← Click a part to begin building', buildX + buildW / 2, H / 2);
     }
 
-    // Click-to-remove hint
-    if (rocket.parts.length > 0) {
+    // Rebuild gap Y array for snap calculations
+    this.vabGapYs = [bottomY];
+    for (const b of this.vabPartBounds) this.vabGapYs.push(b.y);
+
+    // Snap insertion line
+    if (this.vabGhostType !== null && this.vabGapYs.length > 0) {
+      const snapY = this.vabSnapLineY >= 0 ? this.vabSnapLineY : bottomY;
+      ctx.save();
+      ctx.strokeStyle = THEME.accent;
+      ctx.lineWidth = 2;
+      ctx.shadowColor = THEME.accent;
+      ctx.shadowBlur = 6;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.moveTo(buildX + 6, snapY);
+      ctx.lineTo(buildX + buildW - 6, snapY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+
+      // Ghost rendered at snap line position
+      this.renderer.renderVABGhost(this.vabGhostType, buildX + buildW / 2, snapY);
+    }
+
+    // Hint
+    if (rocket.parts.length > 0 && this.vabGhostType === null) {
       ctx.fillStyle = THEME.textDim;
       ctx.font = '9px Courier New';
       ctx.textAlign = 'center';
-      ctx.fillText('Click part to remove it', buildX + buildW / 2, H - 48);
+      ctx.fillText('Click part to pick up  •  Right-click to delete', buildX + buildW / 2, bottomY + 32);
     }
 
-    // ── Right info panel ────────────────────────────────────────────────────
+    // ── Right info panel ───────────────────────────────────────────────────
     const infoX = W - 196;
     ctx.fillStyle = 'rgba(8,12,20,0.95)';
     ctx.fillRect(infoX, 0, 196, H);
@@ -427,12 +470,15 @@ export class UI {
     ctx.textAlign = 'center';
     ctx.fillText('VEHICLE STATS', infoX + 98, 28);
 
+    const allEngineThrust = rocket.parts
+      .filter(p => p.def.type === PartType.ENGINE || p.def.type === PartType.ENGINE_VACUUM || p.def.type === PartType.SRB)
+      .reduce((s, p) => s + p.def.maxThrust, 0);
     const stats: [string, string][] = [
       ['Parts',    `${rocket.parts.length}`],
       ['Dry Mass', `${(rocket.parts.reduce((s, p) => s + p.def.dryMass, 0) / 1000).toFixed(2)} t`],
       ['Wet Mass', `${(rocket.getTotalMass() / 1000).toFixed(2)} t`],
       ['Fuel',     `${(rocket.totalFuelCapacity / 1000).toFixed(1)} t`],
-      ['Thrust',   `${(rocket.parts.filter(p => p.def.type === PartType.ENGINE).reduce((s, p) => s + p.def.maxThrust, 0) / 1000).toFixed(0)} kN`],
+      ['Thrust',   `${(allEngineThrust / 1000).toFixed(0)} kN`],
       ['ΔV',       `${rocket.getDeltaV().toFixed(0)} m/s`],
     ];
 
@@ -447,9 +493,7 @@ export class UI {
       ctx.fillText(v, infoX + 184, ry);
     });
 
-    // TWR
-    const totalThrust = rocket.parts.filter(p => p.def.type === PartType.ENGINE).reduce((s, p) => s + p.def.maxThrust, 0);
-    const twr = rocket.getTotalMass() > 0 ? totalThrust / (rocket.getTotalMass() * 9.81) : 0;
+    const twr = rocket.getTotalMass() > 0 ? allEngineThrust / (rocket.getTotalMass() * 9.81) : 0;
     const twrY = 55 + stats.length * 28;
     ctx.fillStyle = THEME.textDim;
     ctx.font = '10px Courier New';
@@ -459,7 +503,6 @@ export class UI {
     ctx.textAlign = 'right';
     ctx.fillText(twr.toFixed(2), infoX + 184, twrY);
 
-    // Divider
     ctx.strokeStyle = THEME.panelBorder;
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -467,7 +510,6 @@ export class UI {
     ctx.lineTo(infoX + 186, H - 170);
     ctx.stroke();
 
-    // Buttons in right panel
     const bw = 170, bh = 36, bx2 = infoX + 13;
     const launchBtn:  Button = { x: bx2, y: H - 160, w: bw, h: bh, label: '🚀 LAUNCH',   action: onLaunch,  accent: true };
     const stagingBtn: Button = { x: bx2, y: H - 114, w: bw, h: bh, label: '🔢 STAGING',  action: onStaging };
@@ -484,32 +526,71 @@ export class UI {
     const infoX = W - 196;
     const bx2 = infoX + 13;
 
-    // Right panel buttons
-    const launchBtn:  Button = { x: bx2, y: H - 160, w: bw, h: bh, label: '', action: onLaunch };
-    const stagingBtn: Button = { x: bx2, y: H - 114, w: bw, h: bh, label: '', action: onStaging };
-    const backBtn:    Button = { x: bx2, y: H - 68,  w: bw, h: bh, label: '', action: onBack };
-
-    for (const btn of [launchBtn, stagingBtn, backBtn]) {
-      if (isHit(btn, mx, my)) { btn.action(); return true; }
+    // Right panel buttons always fire (and cancel ghost)
+    if (mx >= infoX) {
+      const launchBtn:  Button = { x: bx2, y: H - 160, w: bw, h: bh, label: '', action: onLaunch };
+      const stagingBtn: Button = { x: bx2, y: H - 114, w: bw, h: bh, label: '', action: onStaging };
+      const backBtn:    Button = { x: bx2, y: H - 68,  w: bw, h: bh, label: '', action: onBack };
+      for (const btn of [launchBtn, stagingBtn, backBtn]) {
+        if (isHit(btn, mx, my)) {
+          this.vabGhostType = null;
+          btn.action();
+          return true;
+        }
+      }
+      return false;
     }
 
-    // Palette click → add part to top of stack
+    // Ghost is active
+    if (this.vabGhostType !== null) {
+      if (mx >= this.vabBuildX && mx < infoX) {
+        // Place ghost — preserve its stage assignment
+        rocket.insertPartAt(this.vabGhostType, this.vabSnapSlot, this.vabGhostStageIndex);
+        this.vabGhostType       = null;
+        this.vabGhostStageIndex = -1;
+        return true;
+      }
+      // Click in palette → swap ghost type (reset stage since it's a fresh part)
+      if (mx < this.VAB_PALETTE_W) {
+        const cardH = Math.min(62, (H - 60) / VAB_PALETTE.length);
+        VAB_PALETTE.forEach((type, i) => {
+          const cy = 42 + i * (cardH + 4);
+          if (my >= cy && my <= cy + cardH) {
+            this.vabGhostType       = type;
+            this.vabGhostStageIndex = -1;
+          }
+        });
+        return true;
+      }
+      return false;
+    }
+
+    // No ghost — palette click → start ghost
     if (mx < this.VAB_PALETTE_W) {
+      const cardH = Math.min(62, (H - 60) / VAB_PALETTE.length);
       VAB_PALETTE.forEach((type, i) => {
-        const cy = 55 + i * 70;
-        if (my >= cy && my <= cy + 62) {
-          rocket.addPartOnTop(type);
+        const cy = 42 + i * (cardH + 4);
+        if (my >= cy && my <= cy + cardH) {
+          this.vabGhostType       = type;
+          this.vabGhostStageIndex = -1;
+          this.vabSnapSlot        = rocket.parts.length;
+          this.vabSnapLineY       = this.vabGapYs[rocket.parts.length] ?? this.vabBottomY;
         }
       });
       return true;
     }
 
-    // Build area click → remove the clicked part
-    if (mx < W - 196) {
+    // No ghost — build area click → pick up clicked part (preserve its stage)
+    if (mx >= this.vabBuildX && mx < infoX) {
       for (const bounds of this.vabPartBounds) {
         if (mx >= bounds.x && mx <= bounds.x + bounds.w &&
             my >= bounds.y && my <= bounds.y + bounds.h) {
-          rocket.removePartById(bounds.id);
+          const part = rocket.parts.find(p => p.id === bounds.id);
+          if (part) {
+            this.vabGhostType       = part.def.type;
+            this.vabGhostStageIndex = part.stageIndex;   // carry stage assignment
+            rocket.removePartById(bounds.id);
+          }
           return true;
         }
       }
@@ -518,18 +599,51 @@ export class UI {
     return false;
   }
 
+  /** Cancel the active ghost (Escape key or right-click in empty space) */
+  cancelVABGhost(): void {
+    this.vabGhostType       = null;
+    this.vabGhostStageIndex = -1;
+  }
+
+  /** Right-click: cancel ghost if active, otherwise delete hovered part */
+  handleVABRightClick(mx: number, my: number, rocket: Rocket): void {
+    if (this.vabGhostType !== null) {
+      this.vabGhostType = null;
+      return;
+    }
+    for (const bounds of this.vabPartBounds) {
+      if (mx >= bounds.x && mx <= bounds.x + bounds.w &&
+          my >= bounds.y && my <= bounds.y + bounds.h) {
+        rocket.removePartById(bounds.id);
+        return;
+      }
+    }
+  }
+
   handleVABMouseMove(mx: number, my: number): void {
     this.mouseX = mx;
     this.mouseY = my;
 
+    // Palette hover
+    const cardH = Math.min(62, (this.H - 60) / VAB_PALETTE.length);
+    this.hoveredPaletteIdx = -1;
     if (mx < this.VAB_PALETTE_W) {
-      this.hoveredPaletteIdx = -1;
       VAB_PALETTE.forEach((_, i) => {
-        const cy = 55 + i * 70;
-        if (my >= cy && my <= cy + 62) this.hoveredPaletteIdx = i;
+        const cy = 42 + i * (cardH + 4);
+        if (my >= cy && my <= cy + cardH) this.hoveredPaletteIdx = i;
       });
-    } else {
-      this.hoveredPaletteIdx = -1;
+    }
+
+    // Update snap slot when ghost is active
+    if (this.vabGhostType !== null && this.vabGapYs.length > 0) {
+      let bestSlot = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < this.vabGapYs.length; i++) {
+        const d = Math.abs(my - this.vabGapYs[i]);
+        if (d < bestDist) { bestDist = d; bestSlot = i; }
+      }
+      this.vabSnapSlot  = bestSlot;
+      this.vabSnapLineY = this.vabGapYs[bestSlot];
     }
   }
 
@@ -539,137 +653,191 @@ export class UI {
     const ctx = this.ctx;
     const { W, H } = this;
 
+    this.stagingBadgeBounds = [];
+
+    // Background
     ctx.fillStyle = THEME.bg;
     ctx.fillRect(0, 0, W, H);
 
+    // Header
     ctx.fillStyle = THEME.accent;
-    ctx.font = 'bold 20px Courier New';
+    ctx.font = 'bold 22px Courier New';
     ctx.textAlign = 'center';
-    ctx.fillText('STAGING', W / 2, 40);
+    ctx.fillText('STAGING', W / 2, 36);
 
     ctx.fillStyle = THEME.textDim;
     ctx.font = '11px Courier New';
-    ctx.fillText('Parts fire in order from Stage 0 (first Space press) upward.', W / 2, 62);
+    ctx.fillText('Click a badge to cycle stage (S0 fires first on Space, then S1, S2…)', W / 2, 58);
 
-    // Auto-stage button
-    const autoBtn: Button = { x: W / 2 - 80, y: 75, w: 160, h: 28, label: '⚡ AUTO-STAGE', action: () => {
-      rocket.autoStage();
-    }};
-    drawButton(ctx, autoBtn, isHit(autoBtn, this.mouseX, this.mouseY));
+    ctx.strokeStyle = THEME.panelBorder;
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(20, 70); ctx.lineTo(W - 20, 70); ctx.stroke();
 
-    // Get all unique stage indices
-    const stageCount = Math.max(4, rocket.stages.length + 1);
-    const colW = Math.min(180, (W - 40) / stageCount);
+    // ── Left panel: rocket parts list ──────────────────────────────────────
+    const leftW = Math.min(360, W * 0.38);
 
-    for (let si = 0; si < stageCount; si++) {
-      const cx = 20 + si * (colW + 8);
-      const cy = 120;
-      const colH = H - 200;
-      const hovered = this.hoveredStageCol === si;
+    ctx.fillStyle = THEME.accent;
+    ctx.font = 'bold 11px Courier New';
+    ctx.textAlign = 'left';
+    ctx.fillText('ROCKET PARTS  (top → bottom)', 20, 88);
 
-      // Column background
-      ctx.fillStyle = hovered ? 'rgba(0,80,120,0.4)' : 'rgba(10,20,35,0.7)';
-      roundRect(ctx, cx, cy, colW, colH, 6);
+    const visualParts = [...rocket.parts].reverse();   // top of rocket first
+    const rowH = Math.min(38, (H - 160) / Math.max(visualParts.length, 1));
+    const listStartY = 96;
+
+    const STAGE_COLS = Renderer.STAGE_COLORS;
+
+    visualParts.forEach((part, i) => {
+      const ry = listStartY + i * rowH;
+      const isInteractive =
+        part.def.type === PartType.ENGINE ||
+        part.def.type === PartType.ENGINE_VACUUM ||
+        part.def.type === PartType.SRB ||
+        part.def.type === PartType.DECOUPLER;
+
+      // Row background
+      ctx.fillStyle = 'rgba(15,25,40,0.7)';
+      roundRect(ctx, 15, ry + 2, leftW - 10, rowH - 4, 4);
       ctx.fill();
-      ctx.strokeStyle = hovered ? THEME.accent : THEME.panelBorder;
-      ctx.lineWidth = 1;
-      roundRect(ctx, cx, cy, colW, colH, 6);
-      ctx.stroke();
 
-      // Stage header
-      ctx.fillStyle = THEME.accent;
-      ctx.font = 'bold 12px Courier New';
-      ctx.textAlign = 'center';
-      ctx.fillText(`STAGE ${si}`, cx + colW / 2, cy + 20);
+      // Color swatch
+      ctx.fillStyle = part.def.color;
+      roundRect(ctx, 20, ry + (rowH - 22) / 2, 18, 22, 2);
+      ctx.fill();
 
-      // Parts in this stage
-      const stage = rocket.stages.find(s => s.stageIndex === si);
-      if (stage) {
-        stage.partIds.forEach((pid, pi) => {
-          const part = rocket.parts.find(p => p.id === pid);
-          if (!part) return;
-          const py2 = cy + 34 + pi * 38;
+      // Name
+      ctx.fillStyle = isInteractive ? THEME.text : THEME.textDim;
+      ctx.font = `${isInteractive ? '' : ''}10px Courier New`;
+      ctx.textAlign = 'left';
+      ctx.fillText(part.def.name, 44, ry + rowH / 2 + 4);
 
-          ctx.fillStyle = part.def.color;
-          roundRect(ctx, cx + 8, py2, colW - 16, 30, 4);
+      // Stage badge
+      const bx = leftW - 14;
+      const by2 = ry + rowH / 2;
+
+      if (isInteractive) {
+        const si = part.stageIndex;
+        const badgeCol = si >= 0 && si < STAGE_COLS.length ? STAGE_COLS[si] : '#444';
+        const badgeLabel = si >= 0 ? `S${si}` : '–';
+        const hovering = Math.hypot(this.mouseX - bx, this.mouseY - by2) <= 13;
+
+        ctx.beginPath();
+        ctx.arc(bx, by2, 13, 0, Math.PI * 2);
+        ctx.fillStyle = badgeCol;
+        ctx.fill();
+        ctx.strokeStyle = hovering ? '#fff' : 'rgba(255,255,255,0.3)';
+        ctx.lineWidth = hovering ? 2 : 1;
+        ctx.stroke();
+        ctx.fillStyle = si >= 0 ? '#000' : '#bbb';
+        ctx.font = 'bold 8px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText(badgeLabel, bx, by2 + 3);
+
+        this.stagingBadgeBounds.push({ partId: part.id, x: bx, y: by2, r: 14 });
+      } else {
+        ctx.fillStyle = '#333';
+        ctx.font = '9px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText('–', bx, by2 + 3);
+      }
+    });
+
+    // ── Right panel: fire sequence ──────────────────────────────────────────
+    const rightX = leftW + 28;
+    const rightW = W - rightX - 20;
+
+    ctx.fillStyle = THEME.accent;
+    ctx.font = 'bold 11px Courier New';
+    ctx.textAlign = 'left';
+    ctx.fillText('FIRE SEQUENCE  (top fires first)', rightX, 88);
+
+    const sortedStages = [...rocket.stages].sort((a, b) => a.stageIndex - b.stageIndex);
+    let seqY = 100;
+
+    if (sortedStages.length === 0) {
+      ctx.fillStyle = THEME.textDim;
+      ctx.font = '12px Courier New';
+      ctx.textAlign = 'left';
+      ctx.fillText('No stages assigned.', rightX, seqY + 20);
+      ctx.fillText('Click Auto-Stage or click badge buttons on the left.', rightX, seqY + 38);
+    } else {
+      for (let si = 0; si < sortedStages.length; si++) {
+        const stage = sortedStages[si];
+        const stageCol = stage.stageIndex < STAGE_COLS.length ? STAGE_COLS[stage.stageIndex] : '#888';
+        const parts = stage.partIds.map(id => rocket.parts.find(p => p.id === id)).filter(Boolean) as typeof rocket.parts;
+
+        const fireLabel = stage.stageIndex === 0
+          ? 'STAGE 0 — 1st Space press'
+          : `STAGE ${stage.stageIndex} — after stage ${stage.stageIndex - 1} burns out`;
+
+        // Stage header bar
+        ctx.fillStyle = stageCol + '28';
+        roundRect(ctx, rightX, seqY, rightW, 20, 4);
+        ctx.fill();
+        ctx.strokeStyle = stageCol;
+        ctx.lineWidth = 1;
+        roundRect(ctx, rightX, seqY, rightW, 20, 4);
+        ctx.stroke();
+        ctx.fillStyle = stageCol;
+        ctx.font = 'bold 10px Courier New';
+        ctx.textAlign = 'left';
+        ctx.fillText(fireLabel, rightX + 10, seqY + 13);
+        seqY += 24;
+
+        for (const part of parts) {
+          ctx.fillStyle = 'rgba(15,25,40,0.7)';
+          roundRect(ctx, rightX + 8, seqY, rightW - 16, 24, 3);
           ctx.fill();
+          ctx.fillStyle = part.def.color;
+          roundRect(ctx, rightX + 13, seqY + 4, 14, 16, 2);
+          ctx.fill();
+          ctx.fillStyle = THEME.text;
+          ctx.font = '10px Courier New';
+          ctx.textAlign = 'left';
+          ctx.fillText(part.def.name, rightX + 33, seqY + 15);
+          seqY += 28;
+        }
 
-          ctx.fillStyle = 'rgba(255,255,255,0.8)';
-          ctx.font = '9px Courier New';
-          ctx.textAlign = 'center';
-          ctx.fillText(part.def.name.slice(0, 14), cx + colW / 2, py2 + 12);
+        // Arrow between stages
+        if (si < sortedStages.length - 1) {
           ctx.fillStyle = THEME.textDim;
-          ctx.font = '8px Courier New';
-          ctx.fillText(part.def.type === PartType.ENGINE ? 'ENGINE' : 'DECOUPLE', cx + colW / 2, py2 + 24);
-        });
+          ctx.font = '14px Courier New';
+          ctx.textAlign = 'left';
+          ctx.fillText('↓ jettison / stage', rightX + 10, seqY + 14);
+          seqY += 26;
+        }
       }
     }
 
-    // Unassigned parts
-    const unassigned = rocket.parts.filter(p =>
-      p.stageIndex === -1 &&
-      (p.def.type === PartType.ENGINE || p.def.type === PartType.DECOUPLER)
-    );
-    if (unassigned.length > 0) {
-      ctx.fillStyle = THEME.textDim;
-      ctx.font = '11px Courier New';
-      ctx.textAlign = 'left';
-      ctx.fillText('Unassigned:', 20, H - 80);
-      unassigned.forEach((p, i) => {
-        ctx.fillStyle = p.def.color;
-        roundRect(ctx, 20 + i * 80, H - 70, 74, 28, 3);
-        ctx.fill();
-        ctx.fillStyle = THEME.text;
-        ctx.font = '9px Courier New';
-        ctx.textAlign = 'center';
-        ctx.fillText(p.def.name.slice(0, 10), 20 + i * 80 + 37, H - 52);
-      });
-    }
-
     // Bottom buttons
-    const confirmBtn: Button = { x: W - 220, y: H - 52, w: 180, h: 36, label: '✔ CONFIRM',  action: onConfirm, accent: true };
-    const backBtn2:   Button = { x: 20,       y: H - 52, w: 120, h: 36, label: '← BACK',    action: onBack };
+    const autoBtn:    Button = { x: 20,       y: H - 52, w: 170, h: 36, label: '⚡ AUTO-STAGE', action: () => rocket.autoStage() };
+    const backBtn2:   Button = { x: 210,      y: H - 52, w: 120, h: 36, label: '← BACK',        action: onBack };
+    const confirmBtn: Button = { x: W - 200,  y: H - 52, w: 180, h: 36, label: '✔ DONE',         action: onConfirm, accent: true };
 
-    drawButton(ctx, confirmBtn, isHit(confirmBtn, this.mouseX, this.mouseY));
+    drawButton(ctx, autoBtn,    isHit(autoBtn,    this.mouseX, this.mouseY));
     drawButton(ctx, backBtn2,   isHit(backBtn2,   this.mouseX, this.mouseY));
+    drawButton(ctx, confirmBtn, isHit(confirmBtn, this.mouseX, this.mouseY));
   }
 
   handleStagingClick(mx: number, my: number, rocket: Rocket, onConfirm: () => void, onBack: () => void): boolean {
     const { W, H } = this;
 
-    // Auto-stage button
-    const autoBtn: Button = { x: W / 2 - 80, y: 75, w: 160, h: 28, label: '', action: () => rocket.autoStage() };
-    if (isHit(autoBtn, mx, my)) { rocket.autoStage(); return true; }
+    const autoBtn:    Button = { x: 20,      y: H - 52, w: 170, h: 36, label: '', action: () => rocket.autoStage() };
+    const backBtn:    Button = { x: 210,     y: H - 52, w: 120, h: 36, label: '', action: onBack };
+    const confirmBtn: Button = { x: W - 200, y: H - 52, w: 180, h: 36, label: '', action: onConfirm };
 
-    // Bottom buttons
-    const confirmBtn: Button = { x: W - 220, y: H - 52, w: 180, h: 36, label: '', action: onConfirm };
-    const backBtn:    Button = { x: 20,       y: H - 52, w: 120, h: 36, label: '', action: onBack };
-
-    for (const btn of [confirmBtn, backBtn]) {
+    for (const btn of [autoBtn, backBtn, confirmBtn]) {
       if (isHit(btn, mx, my)) { btn.action(); return true; }
     }
 
-    // Click on a stage part to reassign to next stage
-    const stageCount = Math.max(4, rocket.stages.length + 1);
-    const colW = Math.min(180, (W - 40) / stageCount);
-    for (let si = 0; si < stageCount; si++) {
-      const cx = 20 + si * (colW + 8);
-      const cy = 120;
-      const colH = H - 200;
-      if (mx >= cx && mx <= cx + colW && my >= cy && my <= cy + colH) {
-        const stage = rocket.stages.find(s => s.stageIndex === si);
-        if (stage) {
-          stage.partIds.forEach((pid, pi) => {
-            const py2 = cy + 34 + pi * 38;
-            if (my >= py2 && my <= py2 + 30) {
-              // Move part to next stage
-              rocket.assignStage(pid, (si + 1) % stageCount);
-            }
-          });
-        }
+    // Badge click → cycle stage
+    for (const badge of this.stagingBadgeBounds) {
+      if (Math.hypot(mx - badge.x, my - badge.y) <= badge.r) {
+        rocket.cycleStage(badge.partId);
         return true;
       }
     }
+
     return false;
   }
 

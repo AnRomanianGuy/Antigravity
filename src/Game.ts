@@ -69,9 +69,15 @@ export class Game {
   };
 
   /** One-shot flags (reset each frame) */
-  private stagePressed = false;
-  private mapPressed   = false;
-  private escPressed   = false;
+  private stagePressed    = false;
+  private mapPressed      = false;
+  private escPressed      = false;
+  private warpUpPressed   = false;
+  private warpDownPressed = false;
+
+  /** Time warp: index into WARP_LEVELS */
+  private readonly WARP_LEVELS = [1, 2, 5, 10] as const;
+  private warpIndex = 0;
 
   // ── Message overlay state ──────────────────────────────────────────────────
   private showMessage = false;
@@ -354,7 +360,11 @@ export class Game {
           this.mapPressed = true;
           break;
         case 'Escape':
-          this.escPressed = true;
+          if (this.screen === GameScreen.VAB) {
+            this.ui.cancelVABGhost();
+          } else {
+            this.escPressed = true;
+          }
           break;
       }
     });
@@ -373,7 +383,7 @@ export class Game {
       const mx = e.clientX, my = e.clientY;
       this.ui.mouseX = mx;
       this.ui.mouseY = my;
-      this.ui.handleVABMouseMove(mx, my);
+      if (this.screen === GameScreen.VAB) this.ui.handleVABMouseMove(mx, my);
       if (this.isMapOpen) this.mapView.handleMouseMove(mx, my);
     });
 
@@ -383,6 +393,13 @@ export class Game {
 
     this.canvas.addEventListener('mouseup', () => {
       if (this.isMapOpen) this.mapView.handleMouseUp();
+    });
+
+    this.canvas.addEventListener('contextmenu', (e: MouseEvent) => {
+      e.preventDefault();
+      if (this.screen === GameScreen.VAB) {
+        this.ui.handleVABRightClick(e.clientX, e.clientY, this.rocket);
+      }
     });
 
     this.canvas.addEventListener('wheel', (e: WheelEvent) => {

@@ -131,18 +131,29 @@ export class PhysicsEngine {
     const gravMag = MU_EARTH / (r * r);
     const gravForce: Vec2 = vec2.scale(radial, -gravMag * body.mass);
 
-    // ── Thrust ──────────────────────────────────────────────────────────────
-    const thrustMag = rocket.getThrust();
+    // ── Thrust (atmospheric-corrected) ──────────────────────────────────────
+    // vacFrac = 0 at sea level, 1 in vacuum.  Isp and thrust both interpolate
+    // between their sea-level and vacuum ratings so vacuum engines are terrible
+    // for launch while atmospheric engines lose ~10% going to orbit.
+    const pressure = this.atmo.getPressure(altitude);
+    const vacFrac  = Math.max(0, 1 - pressure / 101_325);
+
+    let thrustMag = 0;
+    let massFlow  = 0;
+    for (const p of rocket.parts.filter(pp => pp.isThrusting)) {
+      const thr       = p.def.ignoreThrottle ? 1 : rocket.throttle;
+      const effThrust = p.def.maxThrust * thr
+        * (p.def.thrustSL + (1 - p.def.thrustSL) * vacFrac);
+      const effIsp    = p.def.ispSL + (p.def.isp - p.def.ispSL) * vacFrac;
+      thrustMag += effThrust;
+      if (effIsp > 0) massFlow += effThrust / (effIsp * G0);
+    }
+
     const thrustForce: Vec2 = vec2.scale(noseDir, thrustMag);
 
-    // Fuel consumption: ṁ = F_thrust / (Isp · g₀)
-    if (thrustMag > 0) {
-      const isp = rocket.getEffectiveIsp();
-      if (isp > 0) {
-        const massFlow = thrustMag / (isp * G0);   // kg/s
-        rocket.consumeFuel(massFlow * dt);
-        body.mass = rocket.getTotalMass();
-      }
+    if (massFlow > 0) {
+      rocket.consumeFuel(massFlow * dt);
+      body.mass = rocket.getTotalMass();
     }
 
     // ── Aerodynamic Drag ────────────────────────────────────────────────────

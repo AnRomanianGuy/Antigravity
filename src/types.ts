@@ -63,9 +63,11 @@ export enum PartType {
   FUEL_TANK_S,
   FUEL_TANK_L,
   ENGINE,
+  ENGINE_VACUUM,
   DECOUPLER,
   FAIRING,
   HEAT_SHIELD,
+  SRB,
 }
 
 // ─── Part Definition (static catalogue) ──────────────────────────────────────
@@ -77,10 +79,18 @@ export interface PartDef {
   dryMass: number;
   /** Maximum fuel mass in kg (0 for non-tanks) */
   maxFuelMass: number;
-  /** Maximum thrust in Newtons (0 for non-engines) */
+  /** Maximum thrust in Newtons at vacuum (0 for non-engines) */
   maxThrust: number;
-  /** Specific impulse in seconds (0 for non-engines) */
+  /** Vacuum specific impulse in seconds (0 for non-engines) */
   isp: number;
+  /** Sea-level specific impulse in seconds (0 for non-engines) */
+  ispSL: number;
+  /** Fraction of maxThrust available at sea level (0–1; 0 for non-engines) */
+  thrustSL: number;
+  /** If true, engine always burns at 100% regardless of throttle (solid rockets) */
+  ignoreThrottle?: boolean;
+  /** If true, part mounts radially (to the side) rather than stacking vertically */
+  radialMount?: boolean;
   /** Drag coefficient (dimensionless) */
   dragCoeff: number;
   /** Cross-section area in m² used for drag */

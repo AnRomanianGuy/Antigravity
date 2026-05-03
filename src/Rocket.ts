@@ -78,11 +78,11 @@ export class Rocket {
     const idx = this.parts.findIndex(p => p.id === id);
     if (idx === -1) return;
     this.parts.splice(idx, 1);
-    // Re-index slots
     for (let i = 0; i < this.parts.length; i++) {
       this.parts[i].slotIndex = i;
     }
     this._refreshMass();
+    this._rebuildStages();
   }
 
   /** Clear all parts (reset for new build) */
@@ -99,12 +99,14 @@ export class Rocket {
    * @param type  Part type to add
    * @param slot  Target slot (clamps to valid range)
    */
-  insertPartAt(type: PartType, slot: number): PartInstance {
+  insertPartAt(type: PartType, slot: number, stageIndex = -1): PartInstance {
     const inst = new PartInstance(type, 0);
+    inst.stageIndex = stageIndex;
     const s = Math.max(0, Math.min(slot, this.parts.length));
     this.parts.splice(s, 0, inst);
     for (let i = 0; i < this.parts.length; i++) this.parts[i].slotIndex = i;
     this._refreshMass();
+    this._rebuildStages();
     return inst;
   }
 
@@ -123,19 +125,38 @@ export class Rocket {
    * This produces sensible staging for a typical rocket without user input.
    */
   autoStage(): void {
-    this.stages = [];
+    // Reset all
+    for (const part of this.parts) part.stageIndex = -1;
+
+    // Walk bottom → top.
+    // Engines/SRBs fire in the current stage.
+    // Each decoupler belongs to the NEXT stage together with the engines above it.
+    //   S0: first-stage engines (fire on 1st Space)
+    //   S1: decoupler + second-stage engines (separate & ignite on 2nd Space)
+    //   S2: decoupler + third-stage engines …
     let stageIdx = 0;
 
-    // Walk from bottom to top; engines and their decouplers go into stages
     for (const part of this.parts) {
-      if (part.def.type === PartType.ENGINE || part.def.type === PartType.DECOUPLER) {
+      if (part.def.type === PartType.ENGINE ||
+          part.def.type === PartType.ENGINE_VACUUM ||
+          part.def.type === PartType.SRB) {
         part.stageIndex = stageIdx;
-      } else {
-        part.stageIndex = -1;
+      } else if (part.def.type === PartType.DECOUPLER) {
+        stageIdx++;                  // advance — decoupler fires with the next engine group
+        part.stageIndex = stageIdx;
       }
     }
 
-    // Group parts by stageIndex
+    this._rebuildStages();
+  }
+
+  /**
+   * Cycle a part's stage assignment: -1 → 0 → 1 → 2 → 3 → -1
+   */
+  cycleStage(partId: string): void {
+    const part = this.parts.find(p => p.id === partId);
+    if (!part) return;
+    part.stageIndex = part.stageIndex < 3 ? part.stageIndex + 1 : -1;
     this._rebuildStages();
   }
 
@@ -168,7 +189,7 @@ export class Rocket {
       const part = this.parts.find(p => p.id === partId);
       if (!part) continue;
 
-      if (part.def.type === PartType.ENGINE) {
+      if (part.def.type === PartType.ENGINE || part.def.type === PartType.ENGINE_VACUUM || part.def.type === PartType.SRB) {
         part.isActive = true;
       } else if (part.def.type === PartType.DECOUPLER) {
         part.isActive = true;   // mark as blown
@@ -187,7 +208,7 @@ export class Rocket {
    */
   cutEngines(): void {
     for (const part of this.parts) {
-      if (part.def.type === PartType.ENGINE) {
+      if (part.def.type === PartType.ENGINE || part.def.type === PartType.ENGINE_VACUUM || part.def.type === PartType.SRB) {
         part.isActive = false;
       }
     }
@@ -314,7 +335,9 @@ export class Rocket {
 
     // Make sure no engines are active on the pad
     for (const part of this.parts) {
-      if (part.def.type === PartType.ENGINE) part.isActive = false;
+      if (part.def.type === PartType.ENGINE || part.def.type === PartType.ENGINE_VACUUM || part.def.type === PartType.SRB) {
+        part.isActive = false;
+      }
     }
   }
 
@@ -347,7 +370,9 @@ export class Rocket {
    * Summed across all remaining stages.
    */
   getDeltaV(): number {
-    const engines = this.parts.filter(p => p.def.type === PartType.ENGINE);
+    const engines = this.parts.filter(
+      p => p.def.type === PartType.ENGINE || p.def.type === PartType.ENGINE_VACUUM || p.def.type === PartType.SRB,
+    );
     if (engines.length === 0) return 0;
 
     const isp   = this.getEffectiveIsp();

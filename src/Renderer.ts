@@ -60,6 +60,10 @@ export class Renderer {
   /** Elapsed time in seconds — used for animated effects */
   time = 0;
 
+  /** Hit areas for warp buttons — updated each HUD render, read by Game.ts */
+  warpDownBtn = { x: 0, y: 0, w: 28, h: 28 };
+  warpUpBtn   = { x: 0, y: 0, w: 28, h: 28 };
+
   constructor(ctx: CanvasRenderingContext2D) {
     this.ctx = ctx;
     this.W = ctx.canvas.width;
@@ -203,19 +207,29 @@ export class Renderer {
     const ls = this._worldToScreen({ x: 0, y: R_EARTH }, cam);
     const mpp = cam.metersPerPixel;
 
-    if (ls.y < -300 || ls.y > this.H + 50) return;
+    // Only draw when ground is within or just at the screen edge
+    if (ls.y < -300 || ls.y > this.H + 5) return;
 
     const ctx = this.ctx;
-    const { W } = this;
 
-    // Grass horizon strip
-    const grassH = Math.max(3, 18 / mpp);
-    ctx.fillStyle = '#3a7a28';
-    ctx.fillRect(0, ls.y - grassH, W, grassH + 2);
+    // Grass and soil as arcs — follows Earth curvature at any altitude
+    const earthCentre = this._worldToScreen({ x: 0, y: 0 }, cam);
+    const R_px   = R_EARTH / mpp;
+    const grassH = Math.max(3, Math.min(18, 18 / mpp));
 
-    // Earth fill below horizon
-    ctx.fillStyle = '#2a5a20';
-    ctx.fillRect(0, ls.y, W, Math.min(60, grassH * 3));
+    // Bright grass ring at surface
+    ctx.beginPath();
+    ctx.arc(earthCentre.x, earthCentre.y, R_px - grassH * 0.5, 0, Math.PI * 2);
+    ctx.strokeStyle = '#4aaa30';
+    ctx.lineWidth = grassH;
+    ctx.stroke();
+
+    // Dark soil ring just inside
+    ctx.beginPath();
+    ctx.arc(earthCentre.x, earthCentre.y, R_px - grassH * 2.8, 0, Math.PI * 2);
+    ctx.strokeStyle = '#2a5820';
+    ctx.lineWidth = grassH * 3;
+    ctx.stroke();
 
     // Concrete launchpad (100 m wide)
     const padW = Math.max(8, 100 / mpp);
@@ -334,38 +348,69 @@ export class Renderer {
 
   // ─── Rocket Parts ─────────────────────────────────────────────────────────
 
+  /** Half-width of the standard centre stack (px, unscaled) — used for radial offset */
+  private static readonly STACK_HALF_W = 22;
+  /** Gap between main stack edge and radial part edge (px, unscaled) */
+  private static readonly RADIAL_GAP = 6;
+
   /**
-   * Draw all parts as coloured rectangles centred at origin (0,0),
-   * stacked vertically (slot 0 at bottom, highest slot at top).
-   * The caller must have already applied rocket position + rotation transforms.
+   * Draw all parts centred at origin (0,0) in local rocket space.
+   * Radial parts (SRBs) are drawn offset left and right with struts.
    */
   private _drawRocketParts(rocket: Rocket, scale: number): void {
     const ctx = this.ctx;
     if (rocket.parts.length === 0) return;
 
-    // Compute y-offset of the bottom of the stack from the rocket's centre of mass
     const totalH = rocket.parts.reduce((s, p) => s + p.def.renderH * scale, 0);
-    let yBottom = totalH / 2;   // bottom of stack at +totalH/2 (screen-Y down = positive in canvas)
+    let yBottom = totalH / 2;
+
+    const mainHW  = Renderer.STACK_HALF_W  * scale;
+    const radGap  = Renderer.RADIAL_GAP    * scale;
 
     for (const part of rocket.parts) {
-      const w  = part.def.renderW  * scale;
-      const h  = part.def.renderH  * scale;
-      const x  = -w / 2;
-      const y  = yBottom - h;          // top of this part
+      const w = part.def.renderW * scale;
+      const h = part.def.renderH * scale;
+      const y = yBottom - h;
 
-      // Part body
-      ctx.fillStyle = part.def.color;
-      this._roundRect(x, y, w, h, 3 * scale);
-      ctx.fill();
+      if (part.def.radialMount) {
+        // Draw two side boosters (left and right of the main stack)
+        const sideOffset = mainHW + radGap + w / 2;  // centre of each booster from rocket axis
 
-      // Highlight edge
-      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-      ctx.lineWidth = 1 * scale;
-      this._roundRect(x, y, w, h, 3 * scale);
-      ctx.stroke();
+        for (const side of [-1, 1] as const) {
+          const bx = side * sideOffset - w / 2;
+          ctx.fillStyle = part.def.color;
+          this._roundRect(bx, y, w, h, 3 * scale);
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+          ctx.lineWidth = 1 * scale;
+          this._roundRect(bx, y, w, h, 3 * scale);
+          ctx.stroke();
+          this._drawPartDecoration(part.def.type, bx, y, w, h, scale, part);
+        }
 
-      // Part-specific decorations
-      this._drawPartDecoration(part.def.type, x, y, w, h, scale, part);
+        // Struts connecting each booster to the main stack
+        ctx.strokeStyle = 'rgba(160,170,180,0.55)';
+        ctx.lineWidth = 2 * scale;
+        for (const strutFrac of [0.25, 0.68]) {
+          const sy = y + h * strutFrac;
+          for (const side of [-1, 1] as const) {
+            ctx.beginPath();
+            ctx.moveTo(side * mainHW, sy);
+            ctx.lineTo(side * (mainHW + radGap + w), sy);
+            ctx.stroke();
+          }
+        }
+      } else {
+        const x = -w / 2;
+        ctx.fillStyle = part.def.color;
+        this._roundRect(x, y, w, h, 3 * scale);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+        ctx.lineWidth = 1 * scale;
+        this._roundRect(x, y, w, h, 3 * scale);
+        ctx.stroke();
+        this._drawPartDecoration(part.def.type, x, y, w, h, scale, part);
+      }
 
       yBottom -= h;
     }
@@ -401,7 +446,7 @@ export class Renderer {
         break;
       }
       case PartType.ENGINE: {
-        // Nozzle bell
+        // Nozzle bell — compact, for atmospheric use
         const nozzleW = w * 1.1;
         ctx.beginPath();
         ctx.moveTo(x + (w - nozzleW) / 2, y + h * 0.7);
@@ -410,6 +455,35 @@ export class Renderer {
         ctx.lineTo(x + w * 0.3, y + h);
         ctx.closePath();
         ctx.fillStyle = '#5a4030';
+        ctx.fill();
+        break;
+      }
+      case PartType.ENGINE_VACUUM: {
+        // Large expansion-ratio bell — wide, trumpet-shaped for vacuum
+        const bellW = w * 1.55;
+        ctx.beginPath();
+        ctx.moveTo(x + w * 0.3, y + h * 0.55);
+        ctx.lineTo(x + w * 0.7, y + h * 0.55);
+        ctx.bezierCurveTo(
+          x + w * 0.75, y + h * 0.75,
+          x + (w + bellW) / 2, y + h * 0.88,
+          x + (w + bellW) / 2, y + h,
+        );
+        ctx.lineTo(x + (w - bellW) / 2, y + h);
+        ctx.bezierCurveTo(
+          x + (w - bellW) / 2, y + h * 0.88,
+          x + w * 0.25, y + h * 0.75,
+          x + w * 0.3, y + h * 0.55,
+        );
+        ctx.fillStyle = '#2a4a6a';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(100,160,220,0.4)';
+        ctx.lineWidth = 1 * scale;
+        ctx.stroke();
+        // Engine core / injector plate
+        ctx.beginPath();
+        ctx.ellipse(x + w * 0.5, y + h * 0.42, w * 0.18, h * 0.12, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#3a6a9a';
         ctx.fill();
         break;
       }
@@ -425,6 +499,46 @@ export class Renderer {
         ctx.fillRect(x, y, w, h);
         ctx.fillStyle = '#111';
         ctx.fillRect(x + 2 * scale, y + 2 * scale, w - 4 * scale, h * 0.4);
+        break;
+      }
+      case PartType.SRB: {
+        // Nosecone tip
+        ctx.beginPath();
+        ctx.moveTo(x + w * 0.5, y);
+        ctx.lineTo(x + w * 0.12, y + h * 0.18);
+        ctx.lineTo(x + w * 0.88, y + h * 0.18);
+        ctx.closePath();
+        ctx.fillStyle = '#6a4a3a';
+        ctx.fill();
+        // Nozzle (compact, for solid motor)
+        ctx.beginPath();
+        ctx.moveTo(x + w * 0.22, y + h * 0.88);
+        ctx.lineTo(x + w * 0.78, y + h * 0.88);
+        ctx.lineTo(x + w * 0.68, y + h);
+        ctx.lineTo(x + w * 0.32, y + h);
+        ctx.closePath();
+        ctx.fillStyle = '#2a1a0a';
+        ctx.fill();
+        // Left fin
+        const finW = w * 0.5, finH = h * 0.28;
+        ctx.beginPath();
+        ctx.moveTo(x, y + h);
+        ctx.lineTo(x - finW * 0.8, y + h);
+        ctx.lineTo(x, y + h - finH);
+        ctx.closePath();
+        ctx.fillStyle = '#3a2212';
+        ctx.fill();
+        // Right fin
+        ctx.beginPath();
+        ctx.moveTo(x + w, y + h);
+        ctx.lineTo(x + w + finW * 0.8, y + h);
+        ctx.lineTo(x + w, y + h - finH);
+        ctx.closePath();
+        ctx.fillStyle = '#3a2212';
+        ctx.fill();
+        // Body stripe
+        ctx.fillStyle = 'rgba(255,200,100,0.25)';
+        ctx.fillRect(x + w * 0.1, y + h * 0.4, w * 0.8, h * 0.1);
         break;
       }
       case PartType.FAIRING: {
@@ -443,49 +557,76 @@ export class Renderer {
 
   // ─── Exhaust Plume ────────────────────────────────────────────────────────
 
-  private _drawExhaustPlume(rocket: Rocket, scale: number, throttle: number): void {
-    const ctx = this.ctx;
-    const totalH = rocket.parts.reduce((s, p) => s + p.def.renderH * scale, 0);
-    // Plume starts at the bottom of the stack (in local coords, +y is down)
-    const plumeY = totalH / 2;
-    const plumeLen = (80 + throttle * 120) * scale;
-    const plumeW   = (22 + throttle * 18) * scale;
+  /** Draw a single exhaust plume centred at (cx, plumeY) pointing down in local space */
+  private _drawOnePlume(cx: number, plumeY: number, scale: number, throttle: number, small = false): void {
+    const ctx     = this.ctx;
+    const lenMult = small ? 0.60 : 1.0;
+    const plumeLen = (80 + throttle * 120) * scale * lenMult;
+    const plumeW   = (small ? 14 : 22) * scale + throttle * (small ? 10 : 18) * scale;
 
-    const grad = ctx.createLinearGradient(0, plumeY, 0, plumeY + plumeLen);
+    const grad = ctx.createLinearGradient(cx, plumeY, cx, plumeY + plumeLen);
     grad.addColorStop(0,    THEME.exhaustCore);
     grad.addColorStop(0.08, THEME.exhaustMid);
     grad.addColorStop(0.4,  THEME.engineFire);
     grad.addColorStop(1,    THEME.exhaustEdge);
 
-    ctx.save();
-    // Flicker
-    const flicker = 1 + (Math.sin(this.time * 40) * 0.05 + Math.cos(this.time * 67) * 0.03);
-    ctx.scale(flicker, 1);
-
     ctx.beginPath();
-    ctx.moveTo(0, plumeY);
+    ctx.moveTo(cx, plumeY);
     ctx.bezierCurveTo(
-      plumeW / 2, plumeY + plumeLen * 0.3,
-      plumeW * 0.7, plumeY + plumeLen * 0.6,
-      0, plumeY + plumeLen,
+      cx + plumeW / 2, plumeY + plumeLen * 0.3,
+      cx + plumeW * 0.7, plumeY + plumeLen * 0.6,
+      cx, plumeY + plumeLen,
     );
     ctx.bezierCurveTo(
-      -plumeW * 0.7, plumeY + plumeLen * 0.6,
-      -plumeW / 2, plumeY + plumeLen * 0.3,
-      0, plumeY,
+      cx - plumeW * 0.7, plumeY + plumeLen * 0.6,
+      cx - plumeW / 2, plumeY + plumeLen * 0.3,
+      cx, plumeY,
     );
     ctx.fillStyle = grad;
     ctx.fill();
 
-    // Inner core (bright white)
     const coreLen = plumeLen * 0.25;
-    const coreGrad = ctx.createLinearGradient(0, plumeY, 0, plumeY + coreLen);
-    coreGrad.addColorStop(0, 'rgba(255,255,255,0.95)');
+    const coreGrad = ctx.createLinearGradient(cx, plumeY, cx, plumeY + coreLen);
+    coreGrad.addColorStop(0, 'rgba(255,255,255,0.9)');
     coreGrad.addColorStop(1, 'rgba(255,255,255,0)');
     ctx.beginPath();
-    ctx.ellipse(0, plumeY + coreLen / 2, plumeW * 0.18, coreLen / 2, 0, 0, Math.PI * 2);
+    ctx.ellipse(cx, plumeY + coreLen / 2, plumeW * 0.18, coreLen / 2, 0, 0, Math.PI * 2);
     ctx.fillStyle = coreGrad;
     ctx.fill();
+  }
+
+  private _drawExhaustPlume(rocket: Rocket, scale: number, throttle: number): void {
+    const ctx     = this.ctx;
+    const totalH  = rocket.parts.reduce((s, p) => s + p.def.renderH * scale, 0);
+    const stackBottom = totalH / 2;
+
+    const mainHW = Renderer.STACK_HALF_W * scale;
+    const radGap = Renderer.RADIAL_GAP   * scale;
+
+    const flicker = 1 + Math.sin(this.time * 40) * 0.05 + Math.cos(this.time * 67) * 0.03;
+    ctx.save();
+    ctx.scale(flicker, 1);
+
+    // ── Centre-stack engine plume (non-radial thrusting engines) ─────────────
+    const hasCentreThrust = rocket.parts.some(p => p.isThrusting && !p.def.radialMount);
+    if (hasCentreThrust) {
+      this._drawOnePlume(0, stackBottom, scale, throttle, false);
+    }
+
+    // ── SRB side plumes ───────────────────────────────────────────────────────
+    // Walk the stack to find each radial (SRB) part's bottom Y position
+    let yBot = totalH / 2;
+    for (const part of rocket.parts) {
+      const h = part.def.renderH * scale;
+      if (part.def.radialMount && part.isThrusting) {
+        const srbHW    = part.def.renderW * scale / 2;
+        const sideX    = mainHW + radGap + srbHW;
+        // plume from bottom of this SRB on each side
+        this._drawOnePlume(-sideX, yBot, scale, 1.0, true);
+        this._drawOnePlume( sideX, yBot, scale, 1.0, true);
+      }
+      yBot -= h;
+    }
 
     ctx.restore();
   }
@@ -557,16 +698,21 @@ export class Renderer {
 
   // ─── VAB Preview ──────────────────────────────────────────────────────────
 
+  /** Stage badge colors — index = stage number */
+  static readonly STAGE_COLORS = ['#44cc66', '#ccaa22', '#cc6622', '#cc2222', '#8833cc'];
+
   /**
    * Draw the rocket stack in the VAB build area, sitting on the launchpad.
-   * @param cx       Centre-X of the build area in screen pixels
-   * @param bottomY  Y coordinate of the launchpad line in screen pixels
-   * @returns        Screen bounds for each rendered part (used for click-to-remove)
+   * @param cx              Centre-X of the build area in screen pixels
+   * @param bottomY         Y coordinate of the launchpad line in screen pixels
+   * @param showStageBadges Whether to draw stage number badges on engines/decouplers/SRBs
+   * @returns               Screen bounds for each rendered part
    */
   renderVABRocket(
     rocket: Rocket,
     cx: number,
     bottomY: number,
+    showStageBadges = false,
   ): Array<{id: string, x: number, y: number, w: number, h: number}> {
     const ctx = this.ctx;
     if (rocket.parts.length === 0) return [];
@@ -578,41 +724,105 @@ export class Renderer {
 
     const bounds: Array<{id: string, x: number, y: number, w: number, h: number}> = [];
 
-    ctx.save();
-    let yBottom = bottomY;   // start at launchpad, build upward
+    const mainHW = Renderer.STACK_HALF_W * scale;
+    const radGap = Renderer.RADIAL_GAP   * scale;
 
-    for (const part of rocket.parts) {   // slot 0 = bottom (engine end) → drawn first, lowest on screen
+    ctx.save();
+    let yBottom = bottomY;
+
+    for (const part of rocket.parts) {
       const w = part.def.renderW * scale;
       const h = part.def.renderH * scale;
-      const x = cx - w / 2;
       const y = yBottom - h;
 
-      bounds.push({ id: part.id, x, y, w, h });
+      if (part.def.radialMount) {
+        // Two side boosters — store separate hit bounds for each
+        const sideOffset = mainHW + radGap + w / 2;
 
-      // Body
-      ctx.fillStyle = part.def.color;
-      this._roundRect(x, y, w, h, 4);
-      ctx.fill();
+        for (const side of [-1, 1] as const) {
+          const bx = cx + side * sideOffset - w / 2;
+          bounds.push({ id: part.id, x: bx, y, w, h });
 
-      // Edge highlight
-      ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-      ctx.lineWidth = 1;
-      this._roundRect(x, y, w, h, 4);
-      ctx.stroke();
+          ctx.fillStyle = part.def.color;
+          this._roundRect(bx, y, w, h, 4);
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+          ctx.lineWidth = 1;
+          this._roundRect(bx, y, w, h, 4);
+          ctx.stroke();
+          this._drawPartDecoration(part.def.type, bx, y, w, h, scale, part);
+        }
 
-      // Decorations (nozzle, window, fuel bar, etc.)
-      this._drawPartDecoration(part.def.type, x, y, w, h, scale, part);
+        // Struts
+        ctx.strokeStyle = 'rgba(160,170,180,0.5)';
+        ctx.lineWidth = Math.max(1, 1.5 * scale);
+        for (const strutFrac of [0.28, 0.70]) {
+          const sy = y + h * strutFrac;
+          for (const side of [-1, 1] as const) {
+            ctx.beginPath();
+            ctx.moveTo(cx + side * mainHW, sy);
+            ctx.lineTo(cx + side * (mainHW + radGap + w), sy);
+            ctx.stroke();
+          }
+        }
 
-      // Part name label
-      ctx.fillStyle = 'rgba(255,255,255,0.85)';
-      ctx.font = '9px Courier New';
-      ctx.textAlign = 'center';
-      ctx.fillText(part.def.name.slice(0, 14), cx, y + h * 0.55);
+        // Stage badge on the right booster
+        if (showStageBadges) {
+          const si  = part.stageIndex;
+          const bCol = si >= 0 && si < Renderer.STAGE_COLORS.length ? Renderer.STAGE_COLORS[si] : '#444';
+          const bLbl = si >= 0 ? `S${si}` : '–';
+          const rbx  = cx + (mainHW + radGap + w / 2) - w / 2 + w - 1;  // right edge of right booster
+          const bby  = y + 10;
+          ctx.beginPath();
+          ctx.arc(rbx, bby, 10, 0, Math.PI * 2);
+          ctx.fillStyle = bCol; ctx.fill();
+          ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 1; ctx.stroke();
+          ctx.fillStyle = si >= 0 ? '#000' : '#aaa';
+          ctx.font = 'bold 8px Courier New'; ctx.textAlign = 'center';
+          ctx.fillText(bLbl, rbx, bby + 3);
+        }
+      } else {
+        const x = cx - w / 2;
+        bounds.push({ id: part.id, x, y, w, h });
+
+        ctx.fillStyle = part.def.color;
+        this._roundRect(x, y, w, h, 4);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+        ctx.lineWidth = 1;
+        this._roundRect(x, y, w, h, 4);
+        ctx.stroke();
+        this._drawPartDecoration(part.def.type, x, y, w, h, scale, part);
+
+        ctx.fillStyle = 'rgba(255,255,255,0.85)';
+        ctx.font = '9px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText(part.def.name.slice(0, 14), cx, y + h * 0.55);
+
+        if (showStageBadges && (
+          part.def.type === PartType.ENGINE ||
+          part.def.type === PartType.ENGINE_VACUUM ||
+          part.def.type === PartType.DECOUPLER
+        )) {
+          const si  = part.stageIndex;
+          const bCol = si >= 0 && si < Renderer.STAGE_COLORS.length ? Renderer.STAGE_COLORS[si] : '#444';
+          const bLbl = si >= 0 ? `S${si}` : '–';
+          const bx2  = x + w - 1;
+          const by2  = y + 10;
+          ctx.beginPath();
+          ctx.arc(bx2, by2, 10, 0, Math.PI * 2);
+          ctx.fillStyle = bCol; ctx.fill();
+          ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 1; ctx.stroke();
+          ctx.fillStyle = si >= 0 ? '#000' : '#aaa';
+          ctx.font = 'bold 8px Courier New'; ctx.textAlign = 'center';
+          ctx.fillText(bLbl, bx2, by2 + 3);
+        }
+      }
 
       yBottom -= h;
     }
 
-    // Attachment node at the top of the stack (snap target indicator)
+    // Attachment node at the top of the stack
     const topY = yBottom;
     ctx.beginPath();
     ctx.arc(cx, topY, 5, 0, Math.PI * 2);
@@ -628,12 +838,58 @@ export class Renderer {
     return bounds;
   }
 
+  // ─── VAB Ghost (dragged part) ─────────────────────────────────────────────
+
+  /**
+   * Draw a semi-transparent ghost of a part centred at (cx, cy).
+   * Radial parts (SRBs) are shown as a pair.
+   */
+  renderVABGhost(type: PartType, cx: number, cy: number): void {
+    const ctx   = this.ctx;
+    const def   = PART_CATALOGUE[type];
+    const scale = 1.5;
+    const w = def.renderW * scale;
+    const h = def.renderH * scale;
+
+    const fake = {
+      def, fuelRemaining: def.maxFuelMass,
+      isActive: false, stageIndex: -1, slotIndex: 0, id: '__ghost__',
+    } as unknown as PartInstance;
+
+    const drawOne = (bx: number, by: number) => {
+      ctx.fillStyle = def.color;
+      this._roundRect(bx, by, w, h, 4);
+      ctx.fill();
+      ctx.strokeStyle = THEME.accent;
+      ctx.lineWidth = 2;
+      this._roundRect(bx, by, w, h, 4);
+      ctx.stroke();
+      this._drawPartDecoration(type, bx, by, w, h, scale, fake);
+    };
+
+    ctx.save();
+    ctx.globalAlpha = 0.52;
+
+    if (def.radialMount) {
+      const mainHW = Renderer.STACK_HALF_W * scale;
+      const radGap = Renderer.RADIAL_GAP   * scale;
+      const sideOffset = mainHW + radGap + w / 2;
+      for (const side of [-1, 1] as const) {
+        drawOne(cx + side * sideOffset - w / 2, cy - h / 2);
+      }
+    } else {
+      drawOne(cx - w / 2, cy - h / 2);
+    }
+
+    ctx.restore();
+  }
+
   // ─── HUD ──────────────────────────────────────────────────────────────────
 
   /**
    * Draw the in-flight HUD overlay (screen-space, no transform needed).
    */
-  renderHUD(rocket: Rocket, frame: PhysicsFrame, throttle: number, currentStage: number, missionTime: number): void {
+  renderHUD(rocket: Rocket, frame: PhysicsFrame, throttle: number, currentStage: number, missionTime: number, warpFactor = 1): void {
     const ctx = this.ctx;
     const { W, H } = this;
 
@@ -753,13 +1009,49 @@ export class Renderer {
       );
     }
 
+    // ── Bottom left: Warp control ─────────────────────────────────────────
+    const warpPanelW = 160, warpPanelH = 44;
+    const warpPanelX = 16, warpPanelY = H - warpPanelH - 16;
+    this._drawPanel(warpPanelX, warpPanelY, warpPanelW, warpPanelH);
+
+    const btnW = 28, btnH = 28;
+    const btnY = warpPanelY + (warpPanelH - btnH) / 2;
+    this.warpDownBtn = { x: warpPanelX + 6,                          y: btnY, w: btnW, h: btnH };
+    this.warpUpBtn   = { x: warpPanelX + warpPanelW - 6 - btnW,     y: btnY, w: btnW, h: btnH };
+
+    // ◀ decrease button
+    const atMin = warpFactor === 1;
+    ctx.fillStyle = atMin ? 'rgba(255,255,255,0.08)' : THEME.accentDim;
+    this._roundRect(this.warpDownBtn.x, this.warpDownBtn.y, btnW, btnH, 4);
+    ctx.fill();
+    ctx.fillStyle = atMin ? THEME.textDim : THEME.accent;
+    ctx.font = 'bold 14px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText('◀', this.warpDownBtn.x + btnW / 2, this.warpDownBtn.y + 19);
+
+    // ▶ increase button
+    const atMax = warpFactor === 10;
+    ctx.fillStyle = atMax ? 'rgba(255,255,255,0.08)' : THEME.accentDim;
+    this._roundRect(this.warpUpBtn.x, this.warpUpBtn.y, btnW, btnH, 4);
+    ctx.fill();
+    ctx.fillStyle = atMax ? THEME.textDim : THEME.accent;
+    ctx.fillText('▶', this.warpUpBtn.x + btnW / 2, this.warpUpBtn.y + 19);
+
+    // Centre: warp multiplier label
+    ctx.fillStyle = warpFactor > 1 ? THEME.warning : THEME.textDim;
+    ctx.font = warpFactor > 1 ? 'bold 14px Courier New' : '12px Courier New';
+    ctx.fillText(`×${warpFactor}`, warpPanelX + warpPanelW / 2, warpPanelY + 20);
+    ctx.fillStyle = THEME.textDim;
+    ctx.font = '9px Courier New';
+    ctx.fillText('WARP [,  .]', warpPanelX + warpPanelW / 2, warpPanelY + 35);
+
     // ── Controls hint (fades after 10 seconds) ───────────────────────────
     if (missionTime < 10) {
       const alpha = Math.max(0, 1 - missionTime / 8);
       ctx.fillStyle = `rgba(100,160,200,${alpha})`;
       ctx.font = '11px Courier New';
       ctx.textAlign = 'right';
-      const hints = ['Shift/Ctrl — Throttle', 'Z — Full  X — Cut', 'A/D — Rotate', 'SPACE — Stage', 'M — Map'];
+      const hints = ['Shift/Ctrl — Throttle', 'Z — Full  X — Cut', 'A/D — Rotate', 'SPACE — Stage', 'M — Map', '. / , — Warp'];
       hints.forEach((h, i) => ctx.fillText(h, W - 20, H - 20 - i * 16));
     }
   }
@@ -812,4 +1104,4 @@ export class Renderer {
 }
 
 // Import needed after class definition to avoid circular dependency issues
-import type { PartInstance } from './Part';
+import { PartInstance, PART_CATALOGUE } from './Part';

@@ -49,9 +49,10 @@
       maxFuelMass: 0,
       maxThrust: 0,
       isp: 0,
+      ispSL: 0,
+      thrustSL: 0,
       dragCoeff: 0.2,
       crossSection: 1.54,
-      // ≈ π*(0.7m)²  — 1.4m diameter capsule
       renderW: 44,
       renderH: 52,
       color: "#4a7fa5",
@@ -64,6 +65,8 @@
       maxFuelMass: 4500,
       maxThrust: 0,
       isp: 0,
+      ispSL: 0,
+      thrustSL: 0,
       dragCoeff: 0.15,
       crossSection: 1.54,
       renderW: 44,
@@ -78,6 +81,8 @@
       maxFuelMass: 9e3,
       maxThrust: 0,
       isp: 0,
+      ispSL: 0,
+      thrustSL: 0,
       dragCoeff: 0.15,
       crossSection: 1.54,
       renderW: 44,
@@ -87,27 +92,54 @@
     },
     [3 /* ENGINE */]: {
       type: 3 /* ENGINE */,
-      name: 'LV-T30 "Reliant" Engine',
+      name: "LV-T30 Booster",
       dryMass: 1250,
       maxFuelMass: 0,
       maxThrust: 215e3,
-      // 215 kN
+      // vacuum thrust, N
       isp: 310,
-      // vacuum Isp in seconds
+      // vacuum Isp, s
+      ispSL: 265,
+      // sea-level Isp (atmosphere reduces nozzle efficiency)
+      thrustSL: 0.9,
+      // 90% thrust at sea level = 193.5 kN
       dragCoeff: 0.5,
       crossSection: 1.54,
       renderW: 44,
       renderH: 62,
       color: "#8a5a3a",
-      description: "Reliable liquid-fuel engine, 215 kN thrust."
+      description: "High-thrust launch engine. 215 kN vac / 193.5 kN SL."
     },
-    [4 /* DECOUPLER */]: {
-      type: 4 /* DECOUPLER */,
+    [4 /* ENGINE_VACUUM */]: {
+      type: 4 /* ENGINE_VACUUM */,
+      name: "LV-909 Terrier",
+      dryMass: 390,
+      maxFuelMass: 0,
+      maxThrust: 6e4,
+      // vacuum thrust, N
+      isp: 345,
+      // high vacuum Isp
+      ispSL: 40,
+      // nearly useless at sea level (large nozzle stalls)
+      thrustSL: 0.1,
+      // 10% thrust at sea level — do NOT use for launch
+      dragCoeff: 0.35,
+      crossSection: 1.77,
+      // large bell
+      renderW: 50,
+      renderH: 55,
+      color: "#4a6a9a",
+      description: "Vacuum-optimised upper-stage engine. 60 kN / Isp 345s vac."
+    },
+    [5 /* DECOUPLER */]: {
+      type: 5 /* DECOUPLER */,
       name: "TR-18A Stack Decoupler",
       dryMass: 400,
       maxFuelMass: 0,
       maxThrust: 0,
       isp: 0,
+      ispSL: 0,
+      thrustSL: 0,
       dragCoeff: 0.1,
       crossSection: 1.54,
       renderW: 44,
@@ -115,37 +147,61 @@
       color: "#aa8822",
       description: "Separates rocket stages explosively."
     },
-    [5 /* FAIRING */]: {
-      type: 5 /* FAIRING */,
+    [6 /* FAIRING */]: {
+      type: 6 /* FAIRING */,
       name: "Aerodynamic Fairing",
       dryMass: 300,
       maxFuelMass: 0,
       maxThrust: 0,
       isp: 0,
+      ispSL: 0,
+      thrustSL: 0,
       dragCoeff: 0.05,
-      // very low drag — protects payload
       crossSection: 2.54,
-      // slightly wider
       renderW: 56,
       renderH: 100,
       color: "#3a5a7a",
       description: "Reduces atmospheric drag on upper stages."
     },
-    [6 /* HEAT_SHIELD */]: {
-      type: 6 /* HEAT_SHIELD */,
+    [7 /* HEAT_SHIELD */]: {
+      type: 7 /* HEAT_SHIELD */,
       name: "Mk1 Heat Shield",
       dryMass: 600,
       maxFuelMass: 0,
       maxThrust: 0,
       isp: 0,
+      ispSL: 0,
+      thrustSL: 0,
       dragCoeff: 0.5,
-      // high drag — ablative braking
       crossSection: 1.77,
-      // slightly wider than fuselage
       renderW: 50,
       renderH: 20,
       color: "#2a2a2a",
       description: "Ablative re-entry heat protection."
+    },
+    [8 /* SRB */]: {
+      type: 8 /* SRB */,
+      name: "RT-10 Hammer SRBs",
+      // always a symmetric pair
+      dryMass: 1e3,
+      // 500 kg × 2
+      maxFuelMass: 16e3,
+      // 8 t × 2 (one per booster)
+      maxThrust: 454e3,
+      // 227 kN × 2 boosters
+      isp: 195,
+      ispSL: 185,
+      thrustSL: 0.94,
+      ignoreThrottle: true,
+      // solid fuel — always full throttle
+      radialMount: true,
+      // mounts on the sides, not stacked vertically
+      dragCoeff: 0.3,
+      crossSection: 1,
+      renderW: 36,
+      renderH: 100,
+      color: "#5a3a2a",
+      description: "Pair of solid boosters mounted on the sides. 454 kN total, always full thrust."
     }
   };
   var _nextId = 1;
@@ -162,9 +218,9 @@
     get currentMass() {
       return this.def.dryMass + this.fuelRemaining;
     }
-    /** True if this part can produce thrust (engine + active + has fuel somewhere) */
+    /** True if this part can produce thrust (engine + active) */
     get isThrusting() {
-      return this.def.type === 3 /* ENGINE */ && this.isActive;
+      return (this.def.type === 3 /* ENGINE */ || this.def.type === 4 /* ENGINE_VACUUM */ || this.def.type === 8 /* SRB */) && this.isActive;
     }
     /** True if this part is a fuel tank that still has propellant */
     get hasFuel() {
@@ -188,12 +244,14 @@
   };
   var VAB_PALETTE = [
     0 /* COMMAND_POD */,
-    5 /* FAIRING */,
+    6 /* FAIRING */,
     2 /* FUEL_TANK_L */,
     1 /* FUEL_TANK_S */,
     3 /* ENGINE */,
-    4 /* DECOUPLER */,
-    6 /* HEAT_SHIELD */
+    4 /* ENGINE_VACUUM */,
+    8 /* SRB */,
+    5 /* DECOUPLER */,
+    7 /* HEAT_SHIELD */
   ];
 
   // src/Physics.ts
@@ -248,15 +306,22 @@
       };
       const gravMag = MU_EARTH / (r * r);
       const gravForce = vec2.scale(radial, -gravMag * body.mass);
-      const thrustMag = rocket.getThrust();
+      const pressure = this.atmo.getPressure(altitude);
+      const vacFrac = Math.max(0, 1 - pressure / 101325);
+      let thrustMag = 0;
+      let massFlow = 0;
+      for (const p of rocket.parts.filter((pp) => pp.isThrusting)) {
+        const thr = p.def.ignoreThrottle ? 1 : rocket.throttle;
+        const effThrust = p.def.maxThrust * thr * (p.def.thrustSL + (1 - p.def.thrustSL) * vacFrac);
+        const effIsp = p.def.ispSL + (p.def.isp - p.def.ispSL) * vacFrac;
+        thrustMag += effThrust;
+        if (effIsp > 0)
+          massFlow += effThrust / (effIsp * G0);
+      }
       const thrustForce = vec2.scale(noseDir, thrustMag);
-      if (thrustMag > 0) {
-        const isp = rocket.getEffectiveIsp();
-        if (isp > 0) {
-          const massFlow = thrustMag / (isp * G0);
-          rocket.consumeFuel(massFlow * dt);
-          body.mass = rocket.getTotalMass();
-        }
+      if (massFlow > 0) {
+        rocket.consumeFuel(massFlow * dt);
+        body.mass = rocket.getTotalMass();
       }
       const speed = vec2.length(body.vel);
       let dragForceMag = 0;
@@ -443,6 +508,7 @@
         this.parts[i].slotIndex = i;
       }
       this._refreshMass();
+      this._rebuildStages();
     }
     /** Clear all parts (reset for new build) */
     clearParts() {
@@ -457,13 +523,15 @@
      * @param type  Part type to add
      * @param slot  Target slot (clamps to valid range)
      */
-    insertPartAt(type, slot) {
+    insertPartAt(type, slot, stageIndex = -1) {
       const inst = new PartInstance(type, 0);
+      inst.stageIndex = stageIndex;
       const s = Math.max(0, Math.min(slot, this.parts.length));
       this.parts.splice(s, 0, inst);
       for (let i = 0; i < this.parts.length; i++)
         this.parts[i].slotIndex = i;
       this._refreshMass();
+      this._rebuildStages();
       return inst;
     }
     /** Total rendered height of the rocket stack in pixels (for VAB display) */
@@ -479,15 +547,27 @@
      * This produces sensible staging for a typical rocket without user input.
      */
     autoStage() {
-      this.stages = [];
+      for (const part of this.parts)
+        part.stageIndex = -1;
       let stageIdx = 0;
       for (const part of this.parts) {
-        if (part.def.type === 3 /* ENGINE */ || part.def.type === 4 /* DECOUPLER */) {
+        if (part.def.type === 3 /* ENGINE */ || part.def.type === 4 /* ENGINE_VACUUM */ || part.def.type === 8 /* SRB */) {
           part.stageIndex = stageIdx;
-        } else {
-          part.stageIndex = -1;
+        } else if (part.def.type === 5 /* DECOUPLER */) {
+          stageIdx++;
+          part.stageIndex = stageIdx;
         }
       }
+      this._rebuildStages();
+    }
+    /**
+     * Cycle a part's stage assignment: -1 → 0 → 1 → 2 → 3 → -1
+     */
+    cycleStage(partId) {
+      const part = this.parts.find((p) => p.id === partId);
+      if (!part)
+        return;
+      part.stageIndex = part.stageIndex < 3 ? part.stageIndex + 1 : -1;
       this._rebuildStages();
     }
     /**
@@ -516,9 +596,9 @@
         const part = this.parts.find((p) => p.id === partId);
         if (!part)
           continue;
-        if (part.def.type === 3 /* ENGINE */) {
+        if (part.def.type === 3 /* ENGINE */ || part.def.type === 4 /* ENGINE_VACUUM */ || part.def.type === 8 /* SRB */) {
           part.isActive = true;
-        } else if (part.def.type === 4 /* DECOUPLER */) {
+        } else if (part.def.type === 5 /* DECOUPLER */) {
           part.isActive = true;
           toSeparate.push(partId);
         }
@@ -531,7 +611,7 @@
      */
     cutEngines() {
       for (const part of this.parts) {
-        if (part.def.type === 3 /* ENGINE */) {
+        if (part.def.type === 3 /* ENGINE */ || part.def.type === 4 /* ENGINE_VACUUM */ || part.def.type === 8 /* SRB */) {
           part.isActive = false;
         }
       }
@@ -634,8 +714,9 @@
       this.isDestroyed = false;
       this.currentStage = -1;
       for (const part of this.parts) {
-        if (part.def.type === 3 /* ENGINE */)
+        if (part.def.type === 3 /* ENGINE */ || part.def.type === 4 /* ENGINE_VACUUM */ || part.def.type === 8 /* SRB */) {
           part.isActive = false;
+        }
       }
     }
     // ─── Cloning (for trajectory prediction) ─────────────────────────────────
@@ -664,7 +745,9 @@
      * Summed across all remaining stages.
      */
     getDeltaV() {
-      const engines = this.parts.filter((p) => p.def.type === 3 /* ENGINE */);
+      const engines = this.parts.filter(
+        (p) => p.def.type === 3 /* ENGINE */ || p.def.type === 4 /* ENGINE_VACUUM */ || p.def.type === 8 /* SRB */
+      );
       if (engines.length === 0)
         return 0;
       const isp = this.getEffectiveIsp();
@@ -839,7 +922,7 @@
     return stars;
   }
   var STARS = generateStars(600);
-  var Renderer = class {
+  var Renderer = class _Renderer {
     constructor(ctx) {
       /** Elapsed time in seconds — used for animated effects */
       this.time = 0;
@@ -947,15 +1030,22 @@
     _drawLaunchpad(cam) {
       const ls = this._worldToScreen({ x: 0, y: R_EARTH }, cam);
       const mpp = cam.metersPerPixel;
-      if (ls.y < -300 || ls.y > this.H + 50)
+      if (ls.y < -300 || ls.y > this.H + 5)
         return;
       const ctx = this.ctx;
-      const { W } = this;
-      const grassH = Math.max(3, 18 / mpp);
-      ctx.fillStyle = "#3a7a28";
-      ctx.fillRect(0, ls.y - grassH, W, grassH + 2);
-      ctx.fillStyle = "#2a5a20";
-      ctx.fillRect(0, ls.y, W, Math.min(60, grassH * 3));
+      const earthCentre = this._worldToScreen({ x: 0, y: 0 }, cam);
+      const R_px = R_EARTH / mpp;
+      const grassH = Math.max(3, Math.min(18, 18 / mpp));
+      ctx.beginPath();
+      ctx.arc(earthCentre.x, earthCentre.y, R_px - grassH * 0.5, 0, Math.PI * 2);
+      ctx.strokeStyle = "#4aaa30";
+      ctx.lineWidth = grassH;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(earthCentre.x, earthCentre.y, R_px - grassH * 2.8, 0, Math.PI * 2);
+      ctx.strokeStyle = "#2a5820";
+      ctx.lineWidth = grassH * 3;
+      ctx.stroke();
       const padW = Math.max(8, 100 / mpp);
       const padH = Math.max(3, 8 / mpp);
       ctx.fillStyle = "#909088";
@@ -1051,11 +1141,18 @@
       }
       ctx.restore();
     }
-    // ─── Rocket Parts ─────────────────────────────────────────────────────────
+    static {
+      // ─── Rocket Parts ─────────────────────────────────────────────────────────
+      /** Half-width of the standard centre stack (px, unscaled) — used for radial offset */
+      this.STACK_HALF_W = 22;
+    }
+    static {
+      /** Gap between main stack edge and radial part edge (px, unscaled) */
+      this.RADIAL_GAP = 6;
+    }
     /**
-     * Draw all parts as coloured rectangles centred at origin (0,0),
-     * stacked vertically (slot 0 at bottom, highest slot at top).
-     * The caller must have already applied rocket position + rotation transforms.
+     * Draw all parts centred at origin (0,0) in local rocket space.
+     * Radial parts (SRBs) are drawn offset left and right with struts.
      */
     _drawRocketParts(rocket, scale) {
       const ctx = this.ctx;
@@ -1063,19 +1160,47 @@
         return;
       const totalH = rocket.parts.reduce((s, p) => s + p.def.renderH * scale, 0);
       let yBottom = totalH / 2;
+      const mainHW = _Renderer.STACK_HALF_W * scale;
+      const radGap = _Renderer.RADIAL_GAP * scale;
       for (const part of rocket.parts) {
         const w = part.def.renderW * scale;
         const h = part.def.renderH * scale;
-        const x = -w / 2;
         const y = yBottom - h;
-        ctx.fillStyle = part.def.color;
-        this._roundRect(x, y, w, h, 3 * scale);
-        ctx.fill();
-        ctx.strokeStyle = "rgba(255,255,255,0.15)";
-        ctx.lineWidth = 1 * scale;
-        this._roundRect(x, y, w, h, 3 * scale);
-        ctx.stroke();
-        this._drawPartDecoration(part.def.type, x, y, w, h, scale, part);
+        if (part.def.radialMount) {
+          const sideOffset = mainHW + radGap + w / 2;
+          for (const side of [-1, 1]) {
+            const bx = side * sideOffset - w / 2;
+            ctx.fillStyle = part.def.color;
+            this._roundRect(bx, y, w, h, 3 * scale);
+            ctx.fill();
+            ctx.strokeStyle = "rgba(255,255,255,0.15)";
+            ctx.lineWidth = 1 * scale;
+            this._roundRect(bx, y, w, h, 3 * scale);
+            ctx.stroke();
+            this._drawPartDecoration(part.def.type, bx, y, w, h, scale, part);
+          }
+          ctx.strokeStyle = "rgba(160,170,180,0.55)";
+          ctx.lineWidth = 2 * scale;
+          for (const strutFrac of [0.25, 0.68]) {
+            const sy = y + h * strutFrac;
+            for (const side of [-1, 1]) {
+              ctx.beginPath();
+              ctx.moveTo(side * mainHW, sy);
+              ctx.lineTo(side * (mainHW + radGap + w), sy);
+              ctx.stroke();
+            }
+          }
+        } else {
+          const x = -w / 2;
+          ctx.fillStyle = part.def.color;
+          this._roundRect(x, y, w, h, 3 * scale);
+          ctx.fill();
+          ctx.strokeStyle = "rgba(255,255,255,0.15)";
+          ctx.lineWidth = 1 * scale;
+          this._roundRect(x, y, w, h, 3 * scale);
+          ctx.stroke();
+          this._drawPartDecoration(part.def.type, x, y, w, h, scale, part);
+        }
         yBottom -= h;
       }
     }
@@ -1111,19 +1236,87 @@
           ctx.fill();
           break;
         }
-        case 4 /* DECOUPLER */: {
+        case 4 /* ENGINE_VACUUM */: {
+          const bellW = w * 1.55;
+          ctx.beginPath();
+          ctx.moveTo(x + w * 0.3, y + h * 0.55);
+          ctx.lineTo(x + w * 0.7, y + h * 0.55);
+          ctx.bezierCurveTo(
+            x + w * 0.75,
+            y + h * 0.75,
+            x + (w + bellW) / 2,
+            y + h * 0.88,
+            x + (w + bellW) / 2,
+            y + h
+          );
+          ctx.lineTo(x + (w - bellW) / 2, y + h);
+          ctx.bezierCurveTo(
+            x + (w - bellW) / 2,
+            y + h * 0.88,
+            x + w * 0.25,
+            y + h * 0.75,
+            x + w * 0.3,
+            y + h * 0.55
+          );
+          ctx.fillStyle = "#2a4a6a";
+          ctx.fill();
+          ctx.strokeStyle = "rgba(100,160,220,0.4)";
+          ctx.lineWidth = 1 * scale;
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.ellipse(x + w * 0.5, y + h * 0.42, w * 0.18, h * 0.12, 0, 0, Math.PI * 2);
+          ctx.fillStyle = "#3a6a9a";
+          ctx.fill();
+          break;
+        }
+        case 5 /* DECOUPLER */: {
           ctx.fillStyle = "#ffcc00";
           ctx.fillRect(x, y + h * 0.3, w, h * 0.4);
           break;
         }
-        case 6 /* HEAT_SHIELD */: {
+        case 7 /* HEAT_SHIELD */: {
           ctx.fillStyle = "rgba(255,100,0,0.25)";
           ctx.fillRect(x, y, w, h);
           ctx.fillStyle = "#111";
           ctx.fillRect(x + 2 * scale, y + 2 * scale, w - 4 * scale, h * 0.4);
           break;
         }
-        case 5 /* FAIRING */: {
+        case 8 /* SRB */: {
+          ctx.beginPath();
+          ctx.moveTo(x + w * 0.5, y);
+          ctx.lineTo(x + w * 0.12, y + h * 0.18);
+          ctx.lineTo(x + w * 0.88, y + h * 0.18);
+          ctx.closePath();
+          ctx.fillStyle = "#6a4a3a";
+          ctx.fill();
+          ctx.beginPath();
+          ctx.moveTo(x + w * 0.22, y + h * 0.88);
+          ctx.lineTo(x + w * 0.78, y + h * 0.88);
+          ctx.lineTo(x + w * 0.68, y + h);
+          ctx.lineTo(x + w * 0.32, y + h);
+          ctx.closePath();
+          ctx.fillStyle = "#2a1a0a";
+          ctx.fill();
+          const finW = w * 0.5, finH = h * 0.28;
+          ctx.beginPath();
+          ctx.moveTo(x, y + h);
+          ctx.lineTo(x - finW * 0.8, y + h);
+          ctx.lineTo(x, y + h - finH);
+          ctx.closePath();
+          ctx.fillStyle = "#3a2212";
+          ctx.fill();
+          ctx.beginPath();
+          ctx.moveTo(x + w, y + h);
+          ctx.lineTo(x + w + finW * 0.8, y + h);
+          ctx.lineTo(x + w, y + h - finH);
+          ctx.closePath();
+          ctx.fillStyle = "#3a2212";
+          ctx.fill();
+          ctx.fillStyle = "rgba(255,200,100,0.25)";
+          ctx.fillRect(x + w * 0.1, y + h * 0.4, w * 0.8, h * 0.1);
+          break;
+        }
+        case 6 /* FAIRING */: {
           ctx.beginPath();
           ctx.moveTo(x + w / 2, y);
           ctx.lineTo(x + w * 0.05, y + h * 0.4);
@@ -1136,48 +1329,70 @@
       }
     }
     // ─── Exhaust Plume ────────────────────────────────────────────────────────
-    _drawExhaustPlume(rocket, scale, throttle) {
+    /** Draw a single exhaust plume centred at (cx, plumeY) pointing down in local space */
+    _drawOnePlume(cx, plumeY, scale, throttle, small = false) {
       const ctx = this.ctx;
-      const totalH = rocket.parts.reduce((s, p) => s + p.def.renderH * scale, 0);
-      const plumeY = totalH / 2;
-      const plumeLen = (80 + throttle * 120) * scale;
-      const plumeW = (22 + throttle * 18) * scale;
-      const grad = ctx.createLinearGradient(0, plumeY, 0, plumeY + plumeLen);
+      const lenMult = small ? 0.6 : 1;
+      const plumeLen = (80 + throttle * 120) * scale * lenMult;
+      const plumeW = (small ? 14 : 22) * scale + throttle * (small ? 10 : 18) * scale;
+      const grad = ctx.createLinearGradient(cx, plumeY, cx, plumeY + plumeLen);
       grad.addColorStop(0, THEME.exhaustCore);
       grad.addColorStop(0.08, THEME.exhaustMid);
       grad.addColorStop(0.4, THEME.engineFire);
       grad.addColorStop(1, THEME.exhaustEdge);
-      ctx.save();
-      const flicker = 1 + (Math.sin(this.time * 40) * 0.05 + Math.cos(this.time * 67) * 0.03);
-      ctx.scale(flicker, 1);
       ctx.beginPath();
-      ctx.moveTo(0, plumeY);
+      ctx.moveTo(cx, plumeY);
       ctx.bezierCurveTo(
-        plumeW / 2,
+        cx + plumeW / 2,
         plumeY + plumeLen * 0.3,
-        plumeW * 0.7,
+        cx + plumeW * 0.7,
         plumeY + plumeLen * 0.6,
-        0,
+        cx,
         plumeY + plumeLen
       );
       ctx.bezierCurveTo(
-        -plumeW * 0.7,
+        cx - plumeW * 0.7,
         plumeY + plumeLen * 0.6,
-        -plumeW / 2,
+        cx - plumeW / 2,
         plumeY + plumeLen * 0.3,
-        0,
+        cx,
         plumeY
       );
       ctx.fillStyle = grad;
       ctx.fill();
       const coreLen = plumeLen * 0.25;
-      const coreGrad = ctx.createLinearGradient(0, plumeY, 0, plumeY + coreLen);
-      coreGrad.addColorStop(0, "rgba(255,255,255,0.95)");
+      const coreGrad = ctx.createLinearGradient(cx, plumeY, cx, plumeY + coreLen);
+      coreGrad.addColorStop(0, "rgba(255,255,255,0.9)");
       coreGrad.addColorStop(1, "rgba(255,255,255,0)");
       ctx.beginPath();
-      ctx.ellipse(0, plumeY + coreLen / 2, plumeW * 0.18, coreLen / 2, 0, 0, Math.PI * 2);
+      ctx.ellipse(cx, plumeY + coreLen / 2, plumeW * 0.18, coreLen / 2, 0, 0, Math.PI * 2);
       ctx.fillStyle = coreGrad;
       ctx.fill();
+    }
+    _drawExhaustPlume(rocket, scale, throttle) {
+      const ctx = this.ctx;
+      const totalH = rocket.parts.reduce((s, p) => s + p.def.renderH * scale, 0);
+      const stackBottom = totalH / 2;
+      const mainHW = _Renderer.STACK_HALF_W * scale;
+      const radGap = _Renderer.RADIAL_GAP * scale;
+      const flicker = 1 + Math.sin(this.time * 40) * 0.05 + Math.cos(this.time * 67) * 0.03;
+      ctx.save();
+      ctx.scale(flicker, 1);
+      const hasCentreThrust = rocket.parts.some((p) => p.isThrusting && !p.def.radialMount);
+      if (hasCentreThrust) {
+        this._drawOnePlume(0, stackBottom, scale, throttle, false);
+      }
+      let yBot = totalH / 2;
+      for (const part of rocket.parts) {
+        const h = part.def.renderH * scale;
+        if (part.def.radialMount && part.isThrusting) {
+          const srbHW = part.def.renderW * scale / 2;
+          const sideX = mainHW + radGap + srbHW;
+          this._drawOnePlume(-sideX, yBot, scale, 1, true);
+          this._drawOnePlume(sideX, yBot, scale, 1, true);
+        }
+        yBot -= h;
+      }
       ctx.restore();
     }
     // ─── Heat Glow ────────────────────────────────────────────────────────────
@@ -1230,14 +1445,19 @@
       ctx.globalCompositeOperation = "source-over";
       ctx.restore();
     }
-    // ─── VAB Preview ──────────────────────────────────────────────────────────
+    static {
+      // ─── VAB Preview ──────────────────────────────────────────────────────────
+      /** Stage badge colors — index = stage number */
+      this.STAGE_COLORS = ["#44cc66", "#ccaa22", "#cc6622", "#cc2222", "#8833cc"];
+    }
     /**
      * Draw the rocket stack in the VAB build area, sitting on the launchpad.
-     * @param cx       Centre-X of the build area in screen pixels
-     * @param bottomY  Y coordinate of the launchpad line in screen pixels
-     * @returns        Screen bounds for each rendered part (used for click-to-remove)
+     * @param cx              Centre-X of the build area in screen pixels
+     * @param bottomY         Y coordinate of the launchpad line in screen pixels
+     * @param showStageBadges Whether to draw stage number badges on engines/decouplers/SRBs
+     * @returns               Screen bounds for each rendered part
      */
-    renderVABRocket(rocket, cx, bottomY) {
+    renderVABRocket(rocket, cx, bottomY, showStageBadges = false) {
       const ctx = this.ctx;
       if (rocket.parts.length === 0)
         return [];
@@ -1245,26 +1465,91 @@
       const naturalH = rocket.parts.reduce((s, p) => s + p.def.renderH, 0);
       const scale = naturalH > 0 ? Math.min(1.8, available / naturalH) : 1.8;
       const bounds = [];
+      const mainHW = _Renderer.STACK_HALF_W * scale;
+      const radGap = _Renderer.RADIAL_GAP * scale;
       ctx.save();
       let yBottom = bottomY;
       for (const part of rocket.parts) {
         const w = part.def.renderW * scale;
         const h = part.def.renderH * scale;
-        const x = cx - w / 2;
         const y = yBottom - h;
-        bounds.push({ id: part.id, x, y, w, h });
-        ctx.fillStyle = part.def.color;
-        this._roundRect(x, y, w, h, 4);
-        ctx.fill();
-        ctx.strokeStyle = "rgba(255,255,255,0.2)";
-        ctx.lineWidth = 1;
-        this._roundRect(x, y, w, h, 4);
-        ctx.stroke();
-        this._drawPartDecoration(part.def.type, x, y, w, h, scale, part);
-        ctx.fillStyle = "rgba(255,255,255,0.85)";
-        ctx.font = "9px Courier New";
-        ctx.textAlign = "center";
-        ctx.fillText(part.def.name.slice(0, 14), cx, y + h * 0.55);
+        if (part.def.radialMount) {
+          const sideOffset = mainHW + radGap + w / 2;
+          for (const side of [-1, 1]) {
+            const bx = cx + side * sideOffset - w / 2;
+            bounds.push({ id: part.id, x: bx, y, w, h });
+            ctx.fillStyle = part.def.color;
+            this._roundRect(bx, y, w, h, 4);
+            ctx.fill();
+            ctx.strokeStyle = "rgba(255,255,255,0.2)";
+            ctx.lineWidth = 1;
+            this._roundRect(bx, y, w, h, 4);
+            ctx.stroke();
+            this._drawPartDecoration(part.def.type, bx, y, w, h, scale, part);
+          }
+          ctx.strokeStyle = "rgba(160,170,180,0.5)";
+          ctx.lineWidth = Math.max(1, 1.5 * scale);
+          for (const strutFrac of [0.28, 0.7]) {
+            const sy = y + h * strutFrac;
+            for (const side of [-1, 1]) {
+              ctx.beginPath();
+              ctx.moveTo(cx + side * mainHW, sy);
+              ctx.lineTo(cx + side * (mainHW + radGap + w), sy);
+              ctx.stroke();
+            }
+          }
+          if (showStageBadges) {
+            const si = part.stageIndex;
+            const bCol = si >= 0 && si < _Renderer.STAGE_COLORS.length ? _Renderer.STAGE_COLORS[si] : "#444";
+            const bLbl = si >= 0 ? `S${si}` : "\u2013";
+            const rbx = cx + (mainHW + radGap + w / 2) - w / 2 + w - 1;
+            const bby = y + 10;
+            ctx.beginPath();
+            ctx.arc(rbx, bby, 10, 0, Math.PI * 2);
+            ctx.fillStyle = bCol;
+            ctx.fill();
+            ctx.strokeStyle = "rgba(0,0,0,0.6)";
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            ctx.fillStyle = si >= 0 ? "#000" : "#aaa";
+            ctx.font = "bold 8px Courier New";
+            ctx.textAlign = "center";
+            ctx.fillText(bLbl, rbx, bby + 3);
+          }
+        } else {
+          const x = cx - w / 2;
+          bounds.push({ id: part.id, x, y, w, h });
+          ctx.fillStyle = part.def.color;
+          this._roundRect(x, y, w, h, 4);
+          ctx.fill();
+          ctx.strokeStyle = "rgba(255,255,255,0.2)";
+          ctx.lineWidth = 1;
+          this._roundRect(x, y, w, h, 4);
+          ctx.stroke();
+          this._drawPartDecoration(part.def.type, x, y, w, h, scale, part);
+          ctx.fillStyle = "rgba(255,255,255,0.85)";
+          ctx.font = "9px Courier New";
+          ctx.textAlign = "center";
+          ctx.fillText(part.def.name.slice(0, 14), cx, y + h * 0.55);
+          if (showStageBadges && (part.def.type === 3 /* ENGINE */ || part.def.type === 4 /* ENGINE_VACUUM */ || part.def.type === 5 /* DECOUPLER */)) {
+            const si = part.stageIndex;
+            const bCol = si >= 0 && si < _Renderer.STAGE_COLORS.length ? _Renderer.STAGE_COLORS[si] : "#444";
+            const bLbl = si >= 0 ? `S${si}` : "\u2013";
+            const bx2 = x + w - 1;
+            const by2 = y + 10;
+            ctx.beginPath();
+            ctx.arc(bx2, by2, 10, 0, Math.PI * 2);
+            ctx.fillStyle = bCol;
+            ctx.fill();
+            ctx.strokeStyle = "rgba(0,0,0,0.6)";
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            ctx.fillStyle = si >= 0 ? "#000" : "#aaa";
+            ctx.font = "bold 8px Courier New";
+            ctx.textAlign = "center";
+            ctx.fillText(bLbl, bx2, by2 + 3);
+          }
+        }
         yBottom -= h;
       }
       const topY = yBottom;
@@ -1279,6 +1564,49 @@
       ctx.stroke();
       ctx.restore();
       return bounds;
+    }
+    // ─── VAB Ghost (dragged part) ─────────────────────────────────────────────
+    /**
+     * Draw a semi-transparent ghost of a part centred at (cx, cy).
+     * Radial parts (SRBs) are shown as a pair.
+     */
+    renderVABGhost(type, cx, cy) {
+      const ctx = this.ctx;
+      const def = PART_CATALOGUE[type];
+      const scale = 1.5;
+      const w = def.renderW * scale;
+      const h = def.renderH * scale;
+      const fake = {
+        def,
+        fuelRemaining: def.maxFuelMass,
+        isActive: false,
+        stageIndex: -1,
+        slotIndex: 0,
+        id: "__ghost__"
+      };
+      const drawOne = (bx, by) => {
+        ctx.fillStyle = def.color;
+        this._roundRect(bx, by, w, h, 4);
+        ctx.fill();
+        ctx.strokeStyle = THEME.accent;
+        ctx.lineWidth = 2;
+        this._roundRect(bx, by, w, h, 4);
+        ctx.stroke();
+        this._drawPartDecoration(type, bx, by, w, h, scale, fake);
+      };
+      ctx.save();
+      ctx.globalAlpha = 0.52;
+      if (def.radialMount) {
+        const mainHW = _Renderer.STACK_HALF_W * scale;
+        const radGap = _Renderer.RADIAL_GAP * scale;
+        const sideOffset = mainHW + radGap + w / 2;
+        for (const side of [-1, 1]) {
+          drawOne(cx + side * sideOffset - w / 2, cy - h / 2);
+        }
+      } else {
+        drawOne(cx - w / 2, cy - h / 2);
+      }
+      ctx.restore();
     }
     // ─── HUD ──────────────────────────────────────────────────────────────────
     /**
@@ -1474,13 +1802,25 @@
       this.mouseY = 0;
       /** VAB: currently hovered palette part */
       this.hoveredPaletteIdx = -1;
-      /** VAB: screen bounds of each rendered rocket part (for click-to-remove) */
+      /** VAB: screen bounds of each rendered rocket part */
       this.vabPartBounds = [];
-      /** Staging: which stage column is hovered */
-      this.hoveredStageCol = -1;
-      /** Staging: dragged part (id) */
-      this.dragPartId = "";
-      this.dragStageTarget = -1;
+      // ── VAB ghost / drag state ─────────────────────────────────────────────────
+      /** Part type currently being dragged (null = no ghost) */
+      this.vabGhostType = null;
+      /** Stage index carried with the ghost so re-placing preserves staging */
+      this.vabGhostStageIndex = -1;
+      /** Insertion slot the ghost will snap to (0 = bottom of stack) */
+      this.vabSnapSlot = 0;
+      /** Screen Y of the snap insertion line */
+      this.vabSnapLineY = -1;
+      /** Build area geometry (set during renderVAB, read in mouse handlers) */
+      this.vabBottomY = 0;
+      this.vabBuildX = 0;
+      /** Y coordinate of each insertion gap: index i = slot i */
+      this.vabGapYs = [];
+      // ── Staging ────────────────────────────────────────────────────────────────
+      /** Stage badge hit circles from the last renderStaging call */
+      this.stagingBadgeBounds = [];
       // ─── VAB Screen ────────────────────────────────────────────────────────────
       /** Width of the parts palette panel on the left */
       this.VAB_PALETTE_W = 200;
@@ -1650,54 +1990,66 @@
       ctx.font = "bold 13px Courier New";
       ctx.textAlign = "center";
       ctx.fillText("PARTS", this.VAB_PALETTE_W / 2, 28);
+      const cardH = Math.min(62, (H - 60) / VAB_PALETTE.length);
       VAB_PALETTE.forEach((type, i) => {
         const def = PART_CATALOGUE[type];
-        const cy = 55 + i * 70;
+        const cy = 42 + i * (cardH + 4);
         const hovered = this.hoveredPaletteIdx === i;
-        ctx.fillStyle = hovered ? "rgba(0,120,160,0.35)" : "rgba(15,25,40,0.8)";
-        roundRect(ctx, 8, cy, this.VAB_PALETTE_W - 16, 62, 5);
+        const isGhost = this.vabGhostType === type;
+        ctx.fillStyle = isGhost ? "rgba(0,180,220,0.30)" : hovered ? "rgba(0,120,160,0.35)" : "rgba(15,25,40,0.8)";
+        roundRect(ctx, 8, cy, this.VAB_PALETTE_W - 16, cardH, 5);
         ctx.fill();
-        ctx.strokeStyle = hovered ? THEME.accent : THEME.panelBorder;
-        ctx.lineWidth = 1;
-        roundRect(ctx, 8, cy, this.VAB_PALETTE_W - 16, 62, 5);
+        ctx.strokeStyle = isGhost ? THEME.accent : hovered ? THEME.accent : THEME.panelBorder;
+        ctx.lineWidth = isGhost ? 1.5 : 1;
+        roundRect(ctx, 8, cy, this.VAB_PALETTE_W - 16, cardH, 5);
         ctx.stroke();
+        const swH = Math.min(42, cardH - 8);
         ctx.fillStyle = def.color;
-        roundRect(ctx, 14, cy + 10, 22, 42, 3);
+        roundRect(ctx, 14, cy + (cardH - swH) / 2, 20, swH, 3);
         ctx.fill();
-        ctx.fillStyle = hovered ? THEME.accent : THEME.text;
+        ctx.fillStyle = hovered || isGhost ? THEME.accent : THEME.text;
         ctx.font = "10px Courier New";
         ctx.textAlign = "left";
-        ctx.fillText(def.name.length > 16 ? def.name.slice(0, 16) + "\u2026" : def.name, 42, cy + 22);
+        ctx.fillText(def.name.length > 16 ? def.name.slice(0, 16) + "\u2026" : def.name, 40, cy + cardH * 0.38);
         ctx.fillStyle = THEME.textDim;
         ctx.font = "9px Courier New";
-        ctx.fillText(`${(def.dryMass / 1e3).toFixed(1)}t`, 42, cy + 36);
-        if (def.maxThrust > 0) {
-          ctx.fillText(`${(def.maxThrust / 1e3).toFixed(0)}kN`, 80, cy + 36);
-        }
-        if (def.maxFuelMass > 0) {
-          ctx.fillText(`\u26FD${(def.maxFuelMass / 1e3).toFixed(1)}t`, 42, cy + 48);
+        ctx.fillText(`${(def.dryMass / 1e3).toFixed(1)}t`, 40, cy + cardH * 0.6);
+        if (def.maxThrust > 0)
+          ctx.fillText(`${(def.maxThrust / 1e3).toFixed(0)}kN`, 76, cy + cardH * 0.6);
+        if (def.maxFuelMass > 0)
+          ctx.fillText(`\u26FD${(def.maxFuelMass / 1e3).toFixed(1)}t`, 40, cy + cardH * 0.8);
+        if (def.ignoreThrottle) {
+          ctx.fillStyle = "#cc8822";
+          ctx.fillText("SOLID", 76, cy + cardH * 0.8);
         }
       });
-      ctx.fillStyle = THEME.textDim;
+      ctx.fillStyle = this.vabGhostType !== null ? THEME.accent : THEME.textDim;
       ctx.font = "9px Courier New";
       ctx.textAlign = "center";
-      ctx.fillText("Click to add to rocket", this.VAB_PALETTE_W / 2, H - 16);
+      ctx.fillText(
+        this.vabGhostType !== null ? "Click build area to place" : "Click to grab a part",
+        this.VAB_PALETTE_W / 2,
+        H - 16
+      );
       const buildX = this.VAB_PALETTE_W;
-      const buildW = W - buildX - 200;
+      const buildW = W - buildX - 196;
+      const bottomY = H - 80;
+      this.vabBuildX = buildX;
+      this.vabBottomY = bottomY;
       ctx.strokeStyle = "rgba(100,120,150,0.3)";
       ctx.setLineDash([8, 6]);
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(buildX, H - 80);
-      ctx.lineTo(buildX + buildW, H - 80);
+      ctx.moveTo(buildX, bottomY);
+      ctx.lineTo(buildX + buildW, bottomY);
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.fillStyle = THEME.textDim;
       ctx.font = "10px Courier New";
       ctx.textAlign = "center";
-      ctx.fillText("LAUNCHPAD", buildX + buildW / 2, H - 64);
+      ctx.fillText("LAUNCHPAD", buildX + buildW / 2, bottomY + 16);
       if (rocket.parts.length > 0) {
-        this.vabPartBounds = this.renderer.renderVABRocket(rocket, buildX + buildW / 2, H - 80);
+        this.vabPartBounds = this.renderer.renderVABRocket(rocket, buildX + buildW / 2, bottomY, true);
       } else {
         this.vabPartBounds = [];
         ctx.fillStyle = THEME.textDim;
@@ -1705,11 +2057,30 @@
         ctx.textAlign = "center";
         ctx.fillText("\u2190 Click a part to begin building", buildX + buildW / 2, H / 2);
       }
-      if (rocket.parts.length > 0) {
+      this.vabGapYs = [bottomY];
+      for (const b of this.vabPartBounds)
+        this.vabGapYs.push(b.y);
+      if (this.vabGhostType !== null && this.vabGapYs.length > 0) {
+        const snapY = this.vabSnapLineY >= 0 ? this.vabSnapLineY : bottomY;
+        ctx.save();
+        ctx.strokeStyle = THEME.accent;
+        ctx.lineWidth = 2;
+        ctx.shadowColor = THEME.accent;
+        ctx.shadowBlur = 6;
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        ctx.moveTo(buildX + 6, snapY);
+        ctx.lineTo(buildX + buildW - 6, snapY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+        this.renderer.renderVABGhost(this.vabGhostType, buildX + buildW / 2, snapY);
+      }
+      if (rocket.parts.length > 0 && this.vabGhostType === null) {
         ctx.fillStyle = THEME.textDim;
         ctx.font = "9px Courier New";
         ctx.textAlign = "center";
-        ctx.fillText("Click part to remove it", buildX + buildW / 2, H - 48);
+        ctx.fillText("Click part to pick up  \u2022  Right-click to delete", buildX + buildW / 2, bottomY + 32);
       }
       const infoX = W - 196;
       ctx.fillStyle = "rgba(8,12,20,0.95)";
@@ -1724,12 +2095,13 @@
       ctx.font = "bold 12px Courier New";
       ctx.textAlign = "center";
       ctx.fillText("VEHICLE STATS", infoX + 98, 28);
+      const allEngineThrust = rocket.parts.filter((p) => p.def.type === 3 /* ENGINE */ || p.def.type === 4 /* ENGINE_VACUUM */ || p.def.type === 8 /* SRB */).reduce((s, p) => s + p.def.maxThrust, 0);
       const stats = [
         ["Parts", `${rocket.parts.length}`],
         ["Dry Mass", `${(rocket.parts.reduce((s, p) => s + p.def.dryMass, 0) / 1e3).toFixed(2)} t`],
         ["Wet Mass", `${(rocket.getTotalMass() / 1e3).toFixed(2)} t`],
         ["Fuel", `${(rocket.totalFuelCapacity / 1e3).toFixed(1)} t`],
-        ["Thrust", `${(rocket.parts.filter((p) => p.def.type === 3 /* ENGINE */).reduce((s, p) => s + p.def.maxThrust, 0) / 1e3).toFixed(0)} kN`],
+        ["Thrust", `${(allEngineThrust / 1e3).toFixed(0)} kN`],
         ["\u0394V", `${rocket.getDeltaV().toFixed(0)} m/s`]
       ];
       stats.forEach(([k, v], i) => {
@@ -1742,8 +2114,7 @@
         ctx.textAlign = "right";
         ctx.fillText(v, infoX + 184, ry);
       });
-      const totalThrust = rocket.parts.filter((p) => p.def.type === 3 /* ENGINE */).reduce((s, p) => s + p.def.maxThrust, 0);
-      const twr = rocket.getTotalMass() > 0 ? totalThrust / (rocket.getTotalMass() * 9.81) : 0;
+      const twr = rocket.getTotalMass() > 0 ? allEngineThrust / (rocket.getTotalMass() * 9.81) : 0;
       const twrY = 55 + stats.length * 28;
       ctx.fillStyle = THEME.textDim;
       ctx.font = "10px Courier New";
@@ -1771,157 +2142,254 @@
       const bw = 170, bh = 36;
       const infoX = W - 196;
       const bx2 = infoX + 13;
-      const launchBtn = { x: bx2, y: H - 160, w: bw, h: bh, label: "", action: onLaunch };
-      const stagingBtn = { x: bx2, y: H - 114, w: bw, h: bh, label: "", action: onStaging };
-      const backBtn = { x: bx2, y: H - 68, w: bw, h: bh, label: "", action: onBack };
-      for (const btn of [launchBtn, stagingBtn, backBtn]) {
-        if (isHit(btn, mx, my)) {
-          btn.action();
+      if (mx >= infoX) {
+        const launchBtn = { x: bx2, y: H - 160, w: bw, h: bh, label: "", action: onLaunch };
+        const stagingBtn = { x: bx2, y: H - 114, w: bw, h: bh, label: "", action: onStaging };
+        const backBtn = { x: bx2, y: H - 68, w: bw, h: bh, label: "", action: onBack };
+        for (const btn of [launchBtn, stagingBtn, backBtn]) {
+          if (isHit(btn, mx, my)) {
+            this.vabGhostType = null;
+            btn.action();
+            return true;
+          }
+        }
+        return false;
+      }
+      if (this.vabGhostType !== null) {
+        if (mx >= this.vabBuildX && mx < infoX) {
+          rocket.insertPartAt(this.vabGhostType, this.vabSnapSlot, this.vabGhostStageIndex);
+          this.vabGhostType = null;
+          this.vabGhostStageIndex = -1;
           return true;
         }
+        if (mx < this.VAB_PALETTE_W) {
+          const cardH = Math.min(62, (H - 60) / VAB_PALETTE.length);
+          VAB_PALETTE.forEach((type, i) => {
+            const cy = 42 + i * (cardH + 4);
+            if (my >= cy && my <= cy + cardH) {
+              this.vabGhostType = type;
+              this.vabGhostStageIndex = -1;
+            }
+          });
+          return true;
+        }
+        return false;
       }
       if (mx < this.VAB_PALETTE_W) {
+        const cardH = Math.min(62, (H - 60) / VAB_PALETTE.length);
         VAB_PALETTE.forEach((type, i) => {
-          const cy = 55 + i * 70;
-          if (my >= cy && my <= cy + 62) {
-            rocket.addPartOnTop(type);
+          const cy = 42 + i * (cardH + 4);
+          if (my >= cy && my <= cy + cardH) {
+            this.vabGhostType = type;
+            this.vabGhostStageIndex = -1;
+            this.vabSnapSlot = rocket.parts.length;
+            this.vabSnapLineY = this.vabGapYs[rocket.parts.length] ?? this.vabBottomY;
           }
         });
         return true;
       }
-      if (mx < W - 196) {
+      if (mx >= this.vabBuildX && mx < infoX) {
         for (const bounds of this.vabPartBounds) {
           if (mx >= bounds.x && mx <= bounds.x + bounds.w && my >= bounds.y && my <= bounds.y + bounds.h) {
-            rocket.removePartById(bounds.id);
+            const part = rocket.parts.find((p) => p.id === bounds.id);
+            if (part) {
+              this.vabGhostType = part.def.type;
+              this.vabGhostStageIndex = part.stageIndex;
+              rocket.removePartById(bounds.id);
+            }
             return true;
           }
         }
       }
       return false;
     }
+    /** Cancel the active ghost (Escape key or right-click in empty space) */
+    cancelVABGhost() {
+      this.vabGhostType = null;
+      this.vabGhostStageIndex = -1;
+    }
+    /** Right-click: cancel ghost if active, otherwise delete hovered part */
+    handleVABRightClick(mx, my, rocket) {
+      if (this.vabGhostType !== null) {
+        this.vabGhostType = null;
+        return;
+      }
+      for (const bounds of this.vabPartBounds) {
+        if (mx >= bounds.x && mx <= bounds.x + bounds.w && my >= bounds.y && my <= bounds.y + bounds.h) {
+          rocket.removePartById(bounds.id);
+          return;
+        }
+      }
+    }
     handleVABMouseMove(mx, my) {
       this.mouseX = mx;
       this.mouseY = my;
+      const cardH = Math.min(62, (this.H - 60) / VAB_PALETTE.length);
+      this.hoveredPaletteIdx = -1;
       if (mx < this.VAB_PALETTE_W) {
-        this.hoveredPaletteIdx = -1;
         VAB_PALETTE.forEach((_, i) => {
-          const cy = 55 + i * 70;
-          if (my >= cy && my <= cy + 62)
+          const cy = 42 + i * (cardH + 4);
+          if (my >= cy && my <= cy + cardH)
             this.hoveredPaletteIdx = i;
         });
-      } else {
-        this.hoveredPaletteIdx = -1;
+      }
+      if (this.vabGhostType !== null && this.vabGapYs.length > 0) {
+        let bestSlot = 0;
+        let bestDist = Infinity;
+        for (let i = 0; i < this.vabGapYs.length; i++) {
+          const d = Math.abs(my - this.vabGapYs[i]);
+          if (d < bestDist) {
+            bestDist = d;
+            bestSlot = i;
+          }
+        }
+        this.vabSnapSlot = bestSlot;
+        this.vabSnapLineY = this.vabGapYs[bestSlot];
       }
     }
     // ─── Staging Screen ────────────────────────────────────────────────────────
     renderStaging(rocket, onConfirm, onBack) {
       const ctx = this.ctx;
       const { W, H } = this;
+      this.stagingBadgeBounds = [];
       ctx.fillStyle = THEME.bg;
       ctx.fillRect(0, 0, W, H);
       ctx.fillStyle = THEME.accent;
-      ctx.font = "bold 20px Courier New";
+      ctx.font = "bold 22px Courier New";
       ctx.textAlign = "center";
-      ctx.fillText("STAGING", W / 2, 40);
+      ctx.fillText("STAGING", W / 2, 36);
       ctx.fillStyle = THEME.textDim;
       ctx.font = "11px Courier New";
-      ctx.fillText("Parts fire in order from Stage 0 (first Space press) upward.", W / 2, 62);
-      const autoBtn = { x: W / 2 - 80, y: 75, w: 160, h: 28, label: "\u26A1 AUTO-STAGE", action: () => {
-        rocket.autoStage();
-      } };
-      drawButton(ctx, autoBtn, isHit(autoBtn, this.mouseX, this.mouseY));
-      const stageCount = Math.max(4, rocket.stages.length + 1);
-      const colW = Math.min(180, (W - 40) / stageCount);
-      for (let si = 0; si < stageCount; si++) {
-        const cx = 20 + si * (colW + 8);
-        const cy = 120;
-        const colH = H - 200;
-        const hovered = this.hoveredStageCol === si;
-        ctx.fillStyle = hovered ? "rgba(0,80,120,0.4)" : "rgba(10,20,35,0.7)";
-        roundRect(ctx, cx, cy, colW, colH, 6);
+      ctx.fillText("Click a badge to cycle stage (S0 fires first on Space, then S1, S2\u2026)", W / 2, 58);
+      ctx.strokeStyle = THEME.panelBorder;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(20, 70);
+      ctx.lineTo(W - 20, 70);
+      ctx.stroke();
+      const leftW = Math.min(360, W * 0.38);
+      ctx.fillStyle = THEME.accent;
+      ctx.font = "bold 11px Courier New";
+      ctx.textAlign = "left";
+      ctx.fillText("ROCKET PARTS  (top \u2192 bottom)", 20, 88);
+      const visualParts = [...rocket.parts].reverse();
+      const rowH = Math.min(38, (H - 160) / Math.max(visualParts.length, 1));
+      const listStartY = 96;
+      const STAGE_COLS = Renderer.STAGE_COLORS;
+      visualParts.forEach((part, i) => {
+        const ry = listStartY + i * rowH;
+        const isInteractive = part.def.type === 3 /* ENGINE */ || part.def.type === 4 /* ENGINE_VACUUM */ || part.def.type === 8 /* SRB */ || part.def.type === 5 /* DECOUPLER */;
+        ctx.fillStyle = "rgba(15,25,40,0.7)";
+        roundRect(ctx, 15, ry + 2, leftW - 10, rowH - 4, 4);
         ctx.fill();
-        ctx.strokeStyle = hovered ? THEME.accent : THEME.panelBorder;
-        ctx.lineWidth = 1;
-        roundRect(ctx, cx, cy, colW, colH, 6);
-        ctx.stroke();
-        ctx.fillStyle = THEME.accent;
-        ctx.font = "bold 12px Courier New";
-        ctx.textAlign = "center";
-        ctx.fillText(`STAGE ${si}`, cx + colW / 2, cy + 20);
-        const stage = rocket.stages.find((s) => s.stageIndex === si);
-        if (stage) {
-          stage.partIds.forEach((pid, pi) => {
-            const part = rocket.parts.find((p) => p.id === pid);
-            if (!part)
-              return;
-            const py2 = cy + 34 + pi * 38;
-            ctx.fillStyle = part.def.color;
-            roundRect(ctx, cx + 8, py2, colW - 16, 30, 4);
-            ctx.fill();
-            ctx.fillStyle = "rgba(255,255,255,0.8)";
-            ctx.font = "9px Courier New";
-            ctx.textAlign = "center";
-            ctx.fillText(part.def.name.slice(0, 14), cx + colW / 2, py2 + 12);
-            ctx.fillStyle = THEME.textDim;
-            ctx.font = "8px Courier New";
-            ctx.fillText(part.def.type === 3 /* ENGINE */ ? "ENGINE" : "DECOUPLE", cx + colW / 2, py2 + 24);
-          });
-        }
-      }
-      const unassigned = rocket.parts.filter(
-        (p) => p.stageIndex === -1 && (p.def.type === 3 /* ENGINE */ || p.def.type === 4 /* DECOUPLER */)
-      );
-      if (unassigned.length > 0) {
-        ctx.fillStyle = THEME.textDim;
-        ctx.font = "11px Courier New";
+        ctx.fillStyle = part.def.color;
+        roundRect(ctx, 20, ry + (rowH - 22) / 2, 18, 22, 2);
+        ctx.fill();
+        ctx.fillStyle = isInteractive ? THEME.text : THEME.textDim;
+        ctx.font = `${isInteractive ? "" : ""}10px Courier New`;
         ctx.textAlign = "left";
-        ctx.fillText("Unassigned:", 20, H - 80);
-        unassigned.forEach((p, i) => {
-          ctx.fillStyle = p.def.color;
-          roundRect(ctx, 20 + i * 80, H - 70, 74, 28, 3);
+        ctx.fillText(part.def.name, 44, ry + rowH / 2 + 4);
+        const bx = leftW - 14;
+        const by2 = ry + rowH / 2;
+        if (isInteractive) {
+          const si = part.stageIndex;
+          const badgeCol = si >= 0 && si < STAGE_COLS.length ? STAGE_COLS[si] : "#444";
+          const badgeLabel = si >= 0 ? `S${si}` : "\u2013";
+          const hovering = Math.hypot(this.mouseX - bx, this.mouseY - by2) <= 13;
+          ctx.beginPath();
+          ctx.arc(bx, by2, 13, 0, Math.PI * 2);
+          ctx.fillStyle = badgeCol;
           ctx.fill();
-          ctx.fillStyle = THEME.text;
+          ctx.strokeStyle = hovering ? "#fff" : "rgba(255,255,255,0.3)";
+          ctx.lineWidth = hovering ? 2 : 1;
+          ctx.stroke();
+          ctx.fillStyle = si >= 0 ? "#000" : "#bbb";
+          ctx.font = "bold 8px Courier New";
+          ctx.textAlign = "center";
+          ctx.fillText(badgeLabel, bx, by2 + 3);
+          this.stagingBadgeBounds.push({ partId: part.id, x: bx, y: by2, r: 14 });
+        } else {
+          ctx.fillStyle = "#333";
           ctx.font = "9px Courier New";
           ctx.textAlign = "center";
-          ctx.fillText(p.def.name.slice(0, 10), 20 + i * 80 + 37, H - 52);
-        });
+          ctx.fillText("\u2013", bx, by2 + 3);
+        }
+      });
+      const rightX = leftW + 28;
+      const rightW = W - rightX - 20;
+      ctx.fillStyle = THEME.accent;
+      ctx.font = "bold 11px Courier New";
+      ctx.textAlign = "left";
+      ctx.fillText("FIRE SEQUENCE  (top fires first)", rightX, 88);
+      const sortedStages = [...rocket.stages].sort((a, b) => a.stageIndex - b.stageIndex);
+      let seqY = 100;
+      if (sortedStages.length === 0) {
+        ctx.fillStyle = THEME.textDim;
+        ctx.font = "12px Courier New";
+        ctx.textAlign = "left";
+        ctx.fillText("No stages assigned.", rightX, seqY + 20);
+        ctx.fillText("Click Auto-Stage or click badge buttons on the left.", rightX, seqY + 38);
+      } else {
+        for (let si = 0; si < sortedStages.length; si++) {
+          const stage = sortedStages[si];
+          const stageCol = stage.stageIndex < STAGE_COLS.length ? STAGE_COLS[stage.stageIndex] : "#888";
+          const parts = stage.partIds.map((id) => rocket.parts.find((p) => p.id === id)).filter(Boolean);
+          const fireLabel = stage.stageIndex === 0 ? "STAGE 0 \u2014 1st Space press" : `STAGE ${stage.stageIndex} \u2014 after stage ${stage.stageIndex - 1} burns out`;
+          ctx.fillStyle = stageCol + "28";
+          roundRect(ctx, rightX, seqY, rightW, 20, 4);
+          ctx.fill();
+          ctx.strokeStyle = stageCol;
+          ctx.lineWidth = 1;
+          roundRect(ctx, rightX, seqY, rightW, 20, 4);
+          ctx.stroke();
+          ctx.fillStyle = stageCol;
+          ctx.font = "bold 10px Courier New";
+          ctx.textAlign = "left";
+          ctx.fillText(fireLabel, rightX + 10, seqY + 13);
+          seqY += 24;
+          for (const part of parts) {
+            ctx.fillStyle = "rgba(15,25,40,0.7)";
+            roundRect(ctx, rightX + 8, seqY, rightW - 16, 24, 3);
+            ctx.fill();
+            ctx.fillStyle = part.def.color;
+            roundRect(ctx, rightX + 13, seqY + 4, 14, 16, 2);
+            ctx.fill();
+            ctx.fillStyle = THEME.text;
+            ctx.font = "10px Courier New";
+            ctx.textAlign = "left";
+            ctx.fillText(part.def.name, rightX + 33, seqY + 15);
+            seqY += 28;
+          }
+          if (si < sortedStages.length - 1) {
+            ctx.fillStyle = THEME.textDim;
+            ctx.font = "14px Courier New";
+            ctx.textAlign = "left";
+            ctx.fillText("\u2193 jettison / stage", rightX + 10, seqY + 14);
+            seqY += 26;
+          }
+        }
       }
-      const confirmBtn = { x: W - 220, y: H - 52, w: 180, h: 36, label: "\u2714 CONFIRM", action: onConfirm, accent: true };
-      const backBtn2 = { x: 20, y: H - 52, w: 120, h: 36, label: "\u2190 BACK", action: onBack };
-      drawButton(ctx, confirmBtn, isHit(confirmBtn, this.mouseX, this.mouseY));
+      const autoBtn = { x: 20, y: H - 52, w: 170, h: 36, label: "\u26A1 AUTO-STAGE", action: () => rocket.autoStage() };
+      const backBtn2 = { x: 210, y: H - 52, w: 120, h: 36, label: "\u2190 BACK", action: onBack };
+      const confirmBtn = { x: W - 200, y: H - 52, w: 180, h: 36, label: "\u2714 DONE", action: onConfirm, accent: true };
+      drawButton(ctx, autoBtn, isHit(autoBtn, this.mouseX, this.mouseY));
       drawButton(ctx, backBtn2, isHit(backBtn2, this.mouseX, this.mouseY));
+      drawButton(ctx, confirmBtn, isHit(confirmBtn, this.mouseX, this.mouseY));
     }
     handleStagingClick(mx, my, rocket, onConfirm, onBack) {
       const { W, H } = this;
-      const autoBtn = { x: W / 2 - 80, y: 75, w: 160, h: 28, label: "", action: () => rocket.autoStage() };
-      if (isHit(autoBtn, mx, my)) {
-        rocket.autoStage();
-        return true;
-      }
-      const confirmBtn = { x: W - 220, y: H - 52, w: 180, h: 36, label: "", action: onConfirm };
-      const backBtn = { x: 20, y: H - 52, w: 120, h: 36, label: "", action: onBack };
-      for (const btn of [confirmBtn, backBtn]) {
+      const autoBtn = { x: 20, y: H - 52, w: 170, h: 36, label: "", action: () => rocket.autoStage() };
+      const backBtn = { x: 210, y: H - 52, w: 120, h: 36, label: "", action: onBack };
+      const confirmBtn = { x: W - 200, y: H - 52, w: 180, h: 36, label: "", action: onConfirm };
+      for (const btn of [autoBtn, backBtn, confirmBtn]) {
         if (isHit(btn, mx, my)) {
           btn.action();
           return true;
         }
       }
-      const stageCount = Math.max(4, rocket.stages.length + 1);
-      const colW = Math.min(180, (W - 40) / stageCount);
-      for (let si = 0; si < stageCount; si++) {
-        const cx = 20 + si * (colW + 8);
-        const cy = 120;
-        const colH = H - 200;
-        if (mx >= cx && mx <= cx + colW && my >= cy && my <= cy + colH) {
-          const stage = rocket.stages.find((s) => s.stageIndex === si);
-          if (stage) {
-            stage.partIds.forEach((pid, pi) => {
-              const py2 = cy + 34 + pi * 38;
-              if (my >= py2 && my <= py2 + 30) {
-                rocket.assignStage(pid, (si + 1) % stageCount);
-              }
-            });
-          }
+      for (const badge of this.stagingBadgeBounds) {
+        if (Math.hypot(mx - badge.x, my - badge.y) <= badge.r) {
+          rocket.cycleStage(badge.partId);
           return true;
         }
       }
@@ -2663,7 +3131,11 @@
             this.mapPressed = true;
             break;
           case "Escape":
-            this.escPressed = true;
+            if (this.screen === 2 /* VAB */) {
+              this.ui.cancelVABGhost();
+            } else {
+              this.escPressed = true;
+            }
             break;
         }
       });
@@ -2691,7 +3163,8 @@
         const mx = e.clientX, my = e.clientY;
         this.ui.mouseX = mx;
         this.ui.mouseY = my;
-        this.ui.handleVABMouseMove(mx, my);
+        if (this.screen === 2 /* VAB */)
+          this.ui.handleVABMouseMove(mx, my);
         if (this.isMapOpen)
           this.mapView.handleMouseMove(mx, my);
       });
@@ -2702,6 +3175,12 @@
       this.canvas.addEventListener("mouseup", () => {
         if (this.isMapOpen)
           this.mapView.handleMouseUp();
+      });
+      this.canvas.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        if (this.screen === 2 /* VAB */) {
+          this.ui.handleVABRightClick(e.clientX, e.clientY, this.rocket);
+        }
       });
       this.canvas.addEventListener("wheel", (e) => {
         if (this.isMapOpen) {

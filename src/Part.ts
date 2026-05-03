@@ -21,10 +21,9 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
     name: 'Mk1 Command Pod',
     dryMass: 840,
     maxFuelMass: 0,
-    maxThrust: 0,
-    isp: 0,
+    maxThrust: 0,   isp: 0,    ispSL: 0,   thrustSL: 0,
     dragCoeff: 0.20,
-    crossSection: 1.54,   // ≈ π*(0.7m)²  — 1.4m diameter capsule
+    crossSection: 1.54,
     renderW: 44,
     renderH: 52,
     color: '#4a7fa5',
@@ -36,8 +35,7 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
     name: 'FL-T400 Fuel Tank',
     dryMass: 500,
     maxFuelMass: 4500,
-    maxThrust: 0,
-    isp: 0,
+    maxThrust: 0,   isp: 0,    ispSL: 0,   thrustSL: 0,
     dragCoeff: 0.15,
     crossSection: 1.54,
     renderW: 44,
@@ -51,8 +49,7 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
     name: 'FL-T800 Fuel Tank',
     dryMass: 1000,
     maxFuelMass: 9000,
-    maxThrust: 0,
-    isp: 0,
+    maxThrust: 0,   isp: 0,    ispSL: 0,   thrustSL: 0,
     dragCoeff: 0.15,
     crossSection: 1.54,
     renderW: 44,
@@ -63,17 +60,36 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
 
   [PartType.ENGINE]: {
     type: PartType.ENGINE,
-    name: 'LV-T30 "Reliant" Engine',
+    name: 'LV-T30 Booster',
     dryMass: 1250,
     maxFuelMass: 0,
-    maxThrust: 215000,   // 215 kN
-    isp: 310,            // vacuum Isp in seconds
+    maxThrust: 215_000,  // vacuum thrust, N
+    isp: 310,            // vacuum Isp, s
+    ispSL: 265,          // sea-level Isp (atmosphere reduces nozzle efficiency)
+    thrustSL: 0.90,      // 90% thrust at sea level = 193.5 kN
     dragCoeff: 0.50,
     crossSection: 1.54,
     renderW: 44,
     renderH: 62,
     color: '#8a5a3a',
-    description: 'Reliable liquid-fuel engine, 215 kN thrust.',
+    description: 'High-thrust launch engine. 215 kN vac / 193.5 kN SL.',
+  },
+
+  [PartType.ENGINE_VACUUM]: {
+    type: PartType.ENGINE_VACUUM,
+    name: 'LV-909 Terrier',
+    dryMass: 390,
+    maxFuelMass: 0,
+    maxThrust: 60_000,   // vacuum thrust, N
+    isp: 345,            // high vacuum Isp
+    ispSL: 40,           // nearly useless at sea level (large nozzle stalls)
+    thrustSL: 0.10,      // 10% thrust at sea level — do NOT use for launch
+    dragCoeff: 0.35,
+    crossSection: 1.77,  // large bell
+    renderW: 50,
+    renderH: 55,
+    color: '#4a6a9a',
+    description: 'Vacuum-optimised upper-stage engine. 60 kN / Isp 345s vac.',
   },
 
   [PartType.DECOUPLER]: {
@@ -81,8 +97,7 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
     name: 'TR-18A Stack Decoupler',
     dryMass: 400,
     maxFuelMass: 0,
-    maxThrust: 0,
-    isp: 0,
+    maxThrust: 0,   isp: 0,    ispSL: 0,   thrustSL: 0,
     dragCoeff: 0.10,
     crossSection: 1.54,
     renderW: 44,
@@ -96,10 +111,9 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
     name: 'Aerodynamic Fairing',
     dryMass: 300,
     maxFuelMass: 0,
-    maxThrust: 0,
-    isp: 0,
-    dragCoeff: 0.05,     // very low drag — protects payload
-    crossSection: 2.54,  // slightly wider
+    maxThrust: 0,   isp: 0,    ispSL: 0,   thrustSL: 0,
+    dragCoeff: 0.05,
+    crossSection: 2.54,
     renderW: 56,
     renderH: 100,
     color: '#3a5a7a',
@@ -111,14 +125,32 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
     name: 'Mk1 Heat Shield',
     dryMass: 600,
     maxFuelMass: 0,
-    maxThrust: 0,
-    isp: 0,
-    dragCoeff: 0.50,     // high drag — ablative braking
-    crossSection: 1.77,  // slightly wider than fuselage
+    maxThrust: 0,   isp: 0,    ispSL: 0,   thrustSL: 0,
+    dragCoeff: 0.50,
+    crossSection: 1.77,
     renderW: 50,
     renderH: 20,
     color: '#2a2a2a',
     description: 'Ablative re-entry heat protection.',
+  },
+
+  [PartType.SRB]: {
+    type: PartType.SRB,
+    name: 'RT-10 Hammer SRBs',  // always a symmetric pair
+    dryMass: 1_000,              // 500 kg × 2
+    maxFuelMass: 16_000,         // 8 t × 2 (one per booster)
+    maxThrust: 454_000,          // 227 kN × 2 boosters
+    isp: 195,
+    ispSL: 185,
+    thrustSL: 0.94,
+    ignoreThrottle: true,        // solid fuel — always full throttle
+    radialMount: true,           // mounts on the sides, not stacked vertically
+    dragCoeff: 0.30,
+    crossSection: 1.00,
+    renderW: 36,
+    renderH: 100,
+    color: '#5a3a2a',
+    description: 'Pair of solid boosters mounted on the sides. 454 kN total, always full thrust.',
   },
 };
 
@@ -172,9 +204,10 @@ export class PartInstance {
     return this.def.dryMass + this.fuelRemaining;
   }
 
-  /** True if this part can produce thrust (engine + active + has fuel somewhere) */
+  /** True if this part can produce thrust (engine + active) */
   get isThrusting(): boolean {
-    return this.def.type === PartType.ENGINE && this.isActive;
+    return (this.def.type === PartType.ENGINE || this.def.type === PartType.ENGINE_VACUUM || this.def.type === PartType.SRB)
+      && this.isActive;
   }
 
   /** True if this part is a fuel tank that still has propellant */
@@ -210,6 +243,8 @@ export const VAB_PALETTE: PartType[] = [
   PartType.FUEL_TANK_L,
   PartType.FUEL_TANK_S,
   PartType.ENGINE,
+  PartType.ENGINE_VACUUM,
+  PartType.SRB,
   PartType.DECOUPLER,
   PartType.HEAT_SHIELD,
 ];
