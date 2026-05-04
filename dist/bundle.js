@@ -2117,6 +2117,113 @@
       const s = Math.floor(seconds % 60);
       return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
     }
+    // ─── Burn Guidance (flight HUD overlay when a maneuver node exists) ───────
+    /**
+     * Render a burn guidance panel when there is an active maneuver node.
+     * Shows: time to node, total ΔV, heading alignment indicator.
+     */
+    renderBurnGuidance(rocket, node, missionTime) {
+      if (!node || node.executed)
+        return;
+      const totalDV = Math.hypot(node.progradeDV, node.normalDV);
+      if (totalDV < 0.5)
+        return;
+      const ctx = this.ctx;
+      const { W, H } = this;
+      const timeToNode = node.time - missionTime;
+      const vel = rocket.body.vel;
+      const pos = rocket.body.pos;
+      const speed = Math.hypot(vel.x, vel.y);
+      const prograde = speed > 1 ? { x: vel.x / speed, y: vel.y / speed } : { x: 0, y: 1 };
+      const posLen = Math.hypot(pos.x, pos.y);
+      const radialOut = posLen > 0 ? { x: pos.x / posLen, y: pos.y / posLen } : { x: 0, y: 1 };
+      const burnX = node.progradeDV * prograde.x + node.normalDV * radialOut.x;
+      const burnY = node.progradeDV * prograde.y + node.normalDV * radialOut.y;
+      const burnLen = Math.hypot(burnX, burnY);
+      const burnDir = burnLen > 0 ? { x: burnX / burnLen, y: burnY / burnLen } : prograde;
+      const desiredAngle = Math.atan2(burnDir.x, burnDir.y);
+      const currentAngle = rocket.body.angle;
+      let angleDiff = desiredAngle - currentAngle;
+      while (angleDiff > Math.PI)
+        angleDiff -= 2 * Math.PI;
+      while (angleDiff < -Math.PI)
+        angleDiff += 2 * Math.PI;
+      const aligned = Math.abs(angleDiff) < 0.05;
+      const pw = 260, ph = 116;
+      const px = (W - pw) / 2;
+      const py = H / 2 - ph - 20;
+      this._drawPanel(px, py, pw, ph);
+      ctx.fillStyle = timeToNode < 30 ? THEME.danger : THEME.warning;
+      ctx.font = "bold 12px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("\u25B6 MANEUVER NODE", W / 2, py + 17);
+      const leftX = px + 12;
+      const rows = [
+        ["\u0394V", `${totalDV.toFixed(0)} m/s`, THEME.accent],
+        [
+          "T\u2212",
+          timeToNode <= 0 ? "BURN NOW" : this._fmtNodeTime(timeToNode),
+          timeToNode < 30 ? THEME.danger : THEME.text
+        ]
+      ];
+      rows.forEach(([label, value, color], i) => {
+        const ry = py + 36 + i * 20;
+        ctx.fillStyle = THEME.textDim;
+        ctx.font = "10px Courier New";
+        ctx.textAlign = "left";
+        ctx.fillText(label, leftX, ry);
+        ctx.fillStyle = color;
+        ctx.fillText(value, leftX + 36, ry);
+      });
+      const errDeg = (angleDiff * 180 / Math.PI).toFixed(1);
+      const alignStr = aligned ? "\u2713 ALIGNED" : `HDG ${Number(errDeg) > 0 ? "+" : ""}${errDeg}\xB0`;
+      ctx.fillStyle = aligned ? THEME.success : THEME.warning;
+      ctx.font = "bold 10px Courier New";
+      ctx.textAlign = "left";
+      ctx.fillText(alignStr, leftX, py + 80);
+      const cxc = px + pw - 50;
+      const cyc = py + ph / 2 + 4;
+      const cr = 36;
+      ctx.beginPath();
+      ctx.arc(cxc, cyc, cr, 0, Math.PI * 2);
+      ctx.strokeStyle = THEME.panelBorder;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      if (!aligned) {
+        const arcEnd = -Math.PI / 2 + angleDiff;
+        ctx.beginPath();
+        ctx.moveTo(cxc, cyc);
+        ctx.arc(cxc, cyc, cr - 4, -Math.PI / 2, arcEnd, angleDiff < 0);
+        ctx.closePath();
+        ctx.fillStyle = `rgba(255,170,0,0.18)`;
+        ctx.fill();
+      }
+      const da = desiredAngle - Math.PI / 2;
+      ctx.beginPath();
+      ctx.moveTo(cxc + Math.cos(da) * (cr - 8), cyc + Math.sin(da) * (cr - 8));
+      ctx.lineTo(cxc + Math.cos(da) * 6, cyc + Math.sin(da) * 6);
+      ctx.strokeStyle = THEME.success;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      const ca = currentAngle - Math.PI / 2;
+      ctx.beginPath();
+      ctx.moveTo(cxc + Math.cos(ca) * (cr - 8), cyc + Math.sin(ca) * (cr - 8));
+      ctx.lineTo(cxc + Math.cos(ca) * 6, cyc + Math.sin(ca) * 6);
+      ctx.strokeStyle = "rgba(255,255,255,0.70)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(cxc, cyc, 3, 0, Math.PI * 2);
+      ctx.fillStyle = THEME.text;
+      ctx.fill();
+    }
+    _fmtNodeTime(s) {
+      if (s < 60)
+        return `${Math.ceil(s)}s`;
+      const m = Math.floor(s / 60);
+      const sec = Math.floor(s % 60);
+      return `${m}m ${String(sec).padStart(2, "0")}s`;
+    }
   };
 
   // src/UI.ts
@@ -2852,32 +2959,47 @@
     const periR = sma * (1 - ecc);
     const apoR = sma * (1 + ecc);
     const period = 2 * Math.PI * Math.sqrt(sma ** 3 / MU_EARTH);
-    return {
-      sma,
-      ecc,
-      periAlt: periR - R_EARTH,
-      apoAlt: apoR - R_EARTH,
-      period
-    };
+    return { sma, ecc, periAlt: periR - R_EARTH, apoAlt: apoR - R_EARTH, period };
   }
+  var HANDLE_R = 38;
+  var DV_PER_PX = 10;
+  var DV_VIS_PX = 0.1;
   var MapView = class {
     constructor(ctx, atmo) {
-      /** Base screen pixels per metre (Earth radius fills H*0.20) */
+      /** Base screen pixels per metre (Earth radius fills H * 0.20) */
       this.mpp = 1;
-      /** User zoom multiplier (scroll wheel) */
       this.userScale = 1;
-      /** Pan offset in screen pixels */
       this.panX = 0;
       this.panY = 0;
-      /** Drag state */
+      // ── Pan drag state ────────────────────────────────────────────────────────
       this.isDragging = false;
       this.dragStartX = 0;
       this.dragStartY = 0;
-      /** Maneuver nodes (future feature stub) */
-      this.maneuverNodes = [];
-      /** Cached trajectory path (recomputed every ~60 frames) */
+      /** True if the mouse moved enough during mousedown → suppress next click */
+      this._didPan = false;
+      // ── Maneuver node ─────────────────────────────────────────────────────────
+      /** Single active maneuver node (null = none placed) */
+      this.node = null;
+      /** Index into cachedPath[] where the node sits */
+      this._nodeIdx = 0;
+      // ── Trajectory cache ──────────────────────────────────────────────────────
       this.cachedPath = [];
       this.pathAge = 0;
+      this.postNodePath = [];
+      // ── Screen-space hit-test targets (updated each render) ───────────────────
+      this._nodeScreenPt = null;
+      this._progHandle = null;
+      this._retroHandle = null;
+      this._normHandle = null;
+      this._antinormHandle = null;
+      /** Prograde direction in screen space at node (world +Y → screen -Y) */
+      this._progradeScreenDir = { x: 0, y: -1 };
+      /** Radial-out direction in screen space at node */
+      this._radialScreenDir = { x: 1, y: 0 };
+      // ── Handle drag state ─────────────────────────────────────────────────────
+      this._dragging = null;
+      this._dragLastX = 0;
+      this._dragLastY = 0;
       this.ctx = ctx;
       this.atmo = atmo;
       this.W = ctx.canvas.width;
@@ -2888,13 +3010,7 @@
       this.H = h;
     }
     // ─── Full Map Render ──────────────────────────────────────────────────────
-    /**
-     * Render the full map overlay on top of the existing canvas content.
-     * @param rocket  Current rocket state
-     * @param time    Elapsed time in seconds (for animations)
-     * @param onBack  Callback when Back button is clicked
-     */
-    render(rocket, time, _onBack) {
+    render(rocket, wallTime, missionTime, _onBack) {
       const ctx = this.ctx;
       const { W, H } = this;
       ctx.fillStyle = "rgba(4,8,16,0.90)";
@@ -2904,12 +3020,18 @@
       this._drawEarth();
       this.pathAge++;
       if (this.pathAge > 60 || this.cachedPath.length === 0) {
-        this.cachedPath = this._predictTrajectory(rocket);
+        this.cachedPath = this._predictPath(rocket.body.pos, rocket.body.vel, missionTime, 600, 10);
         this.pathAge = 0;
+        if (this.node)
+          this._recomputePostNode();
       }
-      this._drawTrajectory(rocket);
-      this._drawRocketMarker(rocket, time);
-      this._drawManeuverNodes();
+      this._drawTrajectory();
+      if (this.node && this.postNodePath.length > 1)
+        this._drawPostNodeTrajectory();
+      this._drawOrbMarkers(this.cachedPath);
+      this._drawRocketMarker(rocket, wallTime);
+      if (this.node)
+        this._drawManeuverNode(missionTime);
       this._drawOrbitalInfo(rocket);
       ctx.fillStyle = THEME.accent;
       ctx.font = "bold 14px Courier New";
@@ -2917,57 +3039,463 @@
       ctx.fillText("MAP VIEW", W / 2, 28);
       ctx.fillStyle = THEME.textDim;
       ctx.font = "11px Courier New";
-      ctx.fillText("M \u2014 return to flight  |  Drag \u2014 pan  |  Scroll \u2014 zoom", W / 2, 46);
-    }
-    /** Handle click — returns true if back was triggered (not used; M key toggles) */
-    handleClick(_mx, _my) {
-      return false;
+      ctx.fillText("M \u2014 flight  |  Click trajectory \u2014 place node  |  Click node \u2014 delete", W / 2, 46);
     }
     // ─── Trajectory Prediction ───────────────────────────────────────────────
-    /**
-     * Numerically integrate the rocket forward in time using gravity only
-     * (no drag, no thrust assumed during prediction).
-     *
-     * We use a simple Euler integrator with 20-second steps.
-     * For a real Verlet integrator the error would be smaller, but Euler
-     * is sufficient for the visual dotted path.
-     *
-     * @returns Array of world-space positions forming the trajectory
-     */
-    _predictTrajectory(rocket) {
-      const steps = 300;
-      const dt = 20;
+    _predictPath(startPos, startVel, startT, steps, dt) {
       const path = [];
-      let pos = vec2.clone(rocket.body.pos);
-      let vel = vec2.clone(rocket.body.vel);
+      let pos = vec2.clone(startPos);
+      let vel = vec2.clone(startVel);
+      let t = startT;
+      let prevAngle = Math.atan2(pos.y, pos.x);
+      let totalAngle = 0;
       for (let i = 0; i < steps; i++) {
-        path.push(vec2.clone(pos));
+        path.push({ pos: vec2.clone(pos), vel: vec2.clone(vel), t });
         const r = vec2.length(pos);
         if (r < R_EARTH)
           break;
         const gMag = MU_EARTH / (r * r);
         const gDir = vec2.scale(pos, -1 / r);
-        const ax = gDir.x * gMag;
-        const ay = gDir.y * gMag;
-        vel.x += ax * dt;
-        vel.y += ay * dt;
+        vel.x += gDir.x * gMag * dt;
+        vel.y += gDir.y * gMag * dt;
         pos.x += vel.x * dt;
         pos.y += vel.y * dt;
+        t += dt;
+        const curAngle = Math.atan2(pos.y, pos.x);
+        let dA = curAngle - prevAngle;
+        if (dA > Math.PI)
+          dA -= 2 * Math.PI;
+        if (dA < -Math.PI)
+          dA += 2 * Math.PI;
+        totalAngle += Math.abs(dA);
+        prevAngle = curAngle;
+        if (i > 20 && totalAngle >= 2 * Math.PI)
+          break;
       }
       return path;
     }
-    // ─── Drawing Helpers ────────────────────────────────────────────────────
-    /** Effective metres-per-pixel (base scale divided by user zoom) */
+    _recomputePostNode() {
+      if (!this.node) {
+        this.postNodePath = [];
+        return;
+      }
+      const base = this.cachedPath[this._nodeIdx];
+      if (!base) {
+        this.postNodePath = [];
+        return;
+      }
+      const prograde = vec2.normalize(base.vel);
+      const radialOut = vec2.normalize(base.pos);
+      const newVel = {
+        x: base.vel.x + this.node.progradeDV * prograde.x + this.node.normalDV * radialOut.x,
+        y: base.vel.y + this.node.progradeDV * prograde.y + this.node.normalDV * radialOut.y
+      };
+      this.postNodePath = this._predictPath(base.pos, newVel, base.t, 400, 10);
+    }
+    // ─── Interaction ─────────────────────────────────────────────────────────
+    handleClick(mx, my) {
+      if (this._didPan) {
+        this._didPan = false;
+        return false;
+      }
+      if (this.node && this._nodeScreenPt) {
+        const d = Math.hypot(mx - this._nodeScreenPt.x, my - this._nodeScreenPt.y);
+        if (d < 14) {
+          this.node = null;
+          this.postNodePath = [];
+          return true;
+        }
+      }
+      if (this.cachedPath.length === 0)
+        return false;
+      let bestIdx = -1, bestDist = 22;
+      for (let i = 0; i < this.cachedPath.length; i++) {
+        const sp = this._w2s(this.cachedPath[i].pos);
+        const d = Math.hypot(mx - sp.x, my - sp.y);
+        if (d < bestDist) {
+          bestDist = d;
+          bestIdx = i;
+        }
+      }
+      if (bestIdx >= 0) {
+        const pt = this.cachedPath[bestIdx];
+        this.node = { time: pt.t, progradeDV: 0, normalDV: 0, executed: false };
+        this._nodeIdx = bestIdx;
+        this._recomputePostNode();
+        return true;
+      }
+      return false;
+    }
+    handleMouseDown(mx, my) {
+      this._didPan = false;
+      this._dragging = null;
+      if (this.node) {
+        const handles = [
+          ["prograde", this._progHandle],
+          ["retrograde", this._retroHandle],
+          ["normal", this._normHandle],
+          ["antinormal", this._antinormHandle]
+        ];
+        for (const [label, sp] of handles) {
+          if (sp && Math.hypot(mx - sp.x, my - sp.y) < 16) {
+            this._dragging = label;
+            this._dragLastX = mx;
+            this._dragLastY = my;
+            return;
+          }
+        }
+      }
+      this.isDragging = true;
+      this.dragStartX = mx - this.panX;
+      this.dragStartY = my - this.panY;
+    }
+    handleMouseMove(mx, my) {
+      if (this._dragging && this.node) {
+        const dx = mx - this._dragLastX;
+        const dy = my - this._dragLastY;
+        this._dragLastX = mx;
+        this._dragLastY = my;
+        const pv = this._progradeScreenDir;
+        const nr = this._radialScreenDir;
+        switch (this._dragging) {
+          case "prograde":
+            this.node.progradeDV += (dx * pv.x + dy * pv.y) * DV_PER_PX;
+            break;
+          case "retrograde":
+            this.node.progradeDV -= (dx * pv.x + dy * pv.y) * DV_PER_PX;
+            break;
+          case "normal":
+            this.node.normalDV += (dx * nr.x + dy * nr.y) * DV_PER_PX;
+            break;
+          case "antinormal":
+            this.node.normalDV -= (dx * nr.x + dy * nr.y) * DV_PER_PX;
+            break;
+        }
+        this._recomputePostNode();
+        return;
+      }
+      if (!this.isDragging)
+        return;
+      this._didPan = true;
+      this.panX = mx - this.dragStartX;
+      this.panY = my - this.dragStartY;
+    }
+    handleMouseUp() {
+      this.isDragging = false;
+      this._dragging = null;
+    }
+    handleWheel(e) {
+      const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+      this.userScale = Math.max(0.25, Math.min(80, this.userScale * factor));
+    }
+    resetView() {
+      this.panX = 0;
+      this.panY = 0;
+      this.userScale = 1;
+    }
+    // ─── Drawing Helpers ──────────────────────────────────────────────────────
     get eMpp() {
       return this.mpp / this.userScale;
     }
-    /** World position → screen position (Y axis flipped: world +Y = screen −Y) */
     _w2s(world) {
       return {
         x: this.W / 2 + world.x / this.eMpp + this.panX,
         y: this.H / 2 - world.y / this.eMpp + this.panY
       };
     }
+    // ─── Draw Trajectory (base) ───────────────────────────────────────────────
+    _drawTrajectory() {
+      const ctx = this.ctx;
+      const path = this.cachedPath;
+      if (path.length < 2)
+        return;
+      const n = path.length;
+      ctx.save();
+      ctx.setLineDash([]);
+      for (let i = 1; i < n; i++) {
+        const frac = i / n;
+        const alpha = Math.max(0.1, 0.82 - frac * 0.72);
+        const s0 = this._w2s(path[i - 1].pos);
+        const s1 = this._w2s(path[i].pos);
+        if (s0.x < -300 && s1.x < -300)
+          continue;
+        if (s0.x > this.W + 300 && s1.x > this.W + 300)
+          continue;
+        const alt = vec2.length(path[i].pos) - R_EARTH;
+        const inAtmo = this.atmo.isInAtmosphere(alt);
+        ctx.beginPath();
+        ctx.moveTo(s0.x, s0.y);
+        ctx.lineTo(s1.x, s1.y);
+        ctx.strokeStyle = inAtmo ? `rgba(255,150,50,${alpha.toFixed(2)})` : `rgba(0,210,255,${alpha.toFixed(2)})`;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+      const step = Math.max(8, Math.floor(n / 10));
+      for (let i = step; i < n - 1; i += step) {
+        const frac = i / n;
+        if (frac > 0.88)
+          break;
+        const s0 = this._w2s(path[i].pos);
+        const s1 = this._w2s(path[i + 1].pos);
+        const dx = s1.x - s0.x, dy = s1.y - s0.y;
+        const segLen = Math.hypot(dx, dy);
+        if (segLen < 5)
+          continue;
+        const ang = Math.atan2(dy, dx);
+        const cx = (s0.x + s1.x) / 2;
+        const cy = (s0.y + s1.y) / 2;
+        const alpha = Math.max(0.15, 0.55 - frac * 0.4);
+        const alt = vec2.length(path[i].pos) - R_EARTH;
+        const inAtmo = this.atmo.isInAtmosphere(alt);
+        const color = inAtmo ? `rgba(255,170,70,${alpha.toFixed(2)})` : `rgba(0,220,255,${alpha.toFixed(2)})`;
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(ang);
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(6, 0);
+        ctx.lineTo(-4, 3.5);
+        ctx.lineTo(-2, 0);
+        ctx.lineTo(-4, -3.5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+      const last = path[path.length - 1];
+      const lastAlt = vec2.length(last.pos) - R_EARTH;
+      if (lastAlt < 7e4) {
+        const sp = this._w2s(last.pos);
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, 6, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(255,80,0,0.85)";
+        ctx.fill();
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.fillStyle = THEME.danger;
+        ctx.font = "bold 10px Courier New";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.fillText("IMPACT", sp.x + 9, sp.y);
+        ctx.textBaseline = "alphabetic";
+      }
+      ctx.restore();
+    }
+    // ─── Draw Post-node Trajectory (yellow preview) ───────────────────────────
+    _drawPostNodeTrajectory() {
+      const ctx = this.ctx;
+      const path = this.postNodePath;
+      if (path.length < 2)
+        return;
+      const n = path.length;
+      ctx.save();
+      ctx.setLineDash([]);
+      for (let i = 1; i < n; i++) {
+        const frac = i / n;
+        const alpha = Math.max(0.08, 0.8 - frac * 0.72);
+        const s0 = this._w2s(path[i - 1].pos);
+        const s1 = this._w2s(path[i].pos);
+        if (s0.x < -300 && s1.x < -300)
+          continue;
+        if (s0.x > this.W + 300 && s1.x > this.W + 300)
+          continue;
+        ctx.beginPath();
+        ctx.moveTo(s0.x, s0.y);
+        ctx.lineTo(s1.x, s1.y);
+        ctx.strokeStyle = `rgba(255,210,0,${alpha.toFixed(2)})`;
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+      }
+      const step = Math.max(8, Math.floor(n / 10));
+      for (let i = step; i < n - 1; i += step) {
+        const frac = i / n;
+        if (frac > 0.88)
+          break;
+        const s0 = this._w2s(path[i].pos);
+        const s1 = this._w2s(path[i + 1].pos);
+        const dx = s1.x - s0.x, dy = s1.y - s0.y;
+        if (Math.hypot(dx, dy) < 5)
+          continue;
+        const alpha = Math.max(0.15, 0.55 - frac * 0.4);
+        ctx.save();
+        ctx.translate((s0.x + s1.x) / 2, (s0.y + s1.y) / 2);
+        ctx.rotate(Math.atan2(dy, dx));
+        ctx.fillStyle = `rgba(255,220,60,${alpha.toFixed(2)})`;
+        ctx.beginPath();
+        ctx.moveTo(6, 0);
+        ctx.lineTo(-4, 3.5);
+        ctx.lineTo(-2, 0);
+        ctx.lineTo(-4, -3.5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+      ctx.restore();
+      this._drawOrbMarkers(this.postNodePath, "#ffcc00", "#ffaa00");
+    }
+    // ─── Periapsis / Apoapsis markers ────────────────────────────────────────
+    _drawOrbMarkers(path, peColor = THEME.warning, apColor = THEME.accent) {
+      if (path.length < 2)
+        return;
+      let minR = Infinity, maxR = -Infinity;
+      let minPos = path[0].pos, maxPos = path[0].pos;
+      for (const pt of path) {
+        const r = vec2.length(pt.pos);
+        if (r < minR) {
+          minR = r;
+          minPos = pt.pos;
+        }
+        if (r > maxR) {
+          maxR = r;
+          maxPos = pt.pos;
+        }
+      }
+      this._drawOrbMarker(minPos, "Pe", peColor);
+      this._drawOrbMarker(maxPos, "Ap", apColor);
+    }
+    _drawOrbMarker(worldPos, label, color) {
+      const ctx = this.ctx;
+      const sp = this._w2s(worldPos);
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.fillStyle = color;
+      ctx.font = "bold 11px Courier New";
+      ctx.textAlign = "left";
+      const alt = vec2.length(worldPos) - R_EARTH;
+      const altStr = alt < 1e6 ? `${(alt / 1e3).toFixed(1)} km` : `${(alt / 1e6).toFixed(3)} Mm`;
+      ctx.fillText(`${label}: ${altStr}`, sp.x + 8, sp.y - 4);
+    }
+    // ─── Maneuver Node Marker + Handles ──────────────────────────────────────
+    _drawManeuverNode(missionTime) {
+      if (!this.node)
+        return;
+      const base = this.cachedPath[this._nodeIdx];
+      if (!base)
+        return;
+      const ctx = this.ctx;
+      const sp = this._w2s(base.pos);
+      this._nodeScreenPt = sp;
+      const vel = base.vel;
+      const prog = vec2.length(vel) > 1 ? vec2.normalize(vel) : { x: 1, y: 0 };
+      const rOut = vec2.normalize(base.pos);
+      this._progradeScreenDir = { x: prog.x, y: -prog.y };
+      this._radialScreenDir = { x: rOut.x, y: -rOut.y };
+      const pv = this._progradeScreenDir;
+      const nr = this._radialScreenDir;
+      const proArm = HANDLE_R + Math.max(0, this.node.progradeDV) * DV_VIS_PX;
+      const retroArm = HANDLE_R + Math.max(0, -this.node.progradeDV) * DV_VIS_PX;
+      const normArm = HANDLE_R + Math.max(0, this.node.normalDV) * DV_VIS_PX;
+      const antArm = HANDLE_R + Math.max(0, -this.node.normalDV) * DV_VIS_PX;
+      this._progHandle = { x: sp.x + pv.x * proArm, y: sp.y + pv.y * proArm };
+      this._retroHandle = { x: sp.x - pv.x * retroArm, y: sp.y - pv.y * retroArm };
+      this._normHandle = { x: sp.x + nr.x * normArm, y: sp.y + nr.y * normArm };
+      this._antinormHandle = { x: sp.x - nr.x * antArm, y: sp.y - nr.y * antArm };
+      ctx.save();
+      const drawArm = (end, color) => {
+        ctx.beginPath();
+        ctx.moveTo(sp.x, sp.y);
+        ctx.lineTo(end.x, end.y);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      };
+      drawArm(this._progHandle, "#44ff88");
+      drawArm(this._retroHandle, "#ff4444");
+      drawArm(this._normHandle, "#ff88ff");
+      drawArm(this._antinormHandle, "#44ffff");
+      const drawHandle = (pos, color, label) => {
+        const HR = 10;
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, HR, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.strokeStyle = "rgba(0,0,0,0.55)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        const ang = Math.atan2(pos.y - sp.y, pos.x - sp.x);
+        ctx.save();
+        ctx.translate(pos.x, pos.y);
+        ctx.rotate(ang);
+        ctx.fillStyle = "rgba(0,0,0,0.75)";
+        ctx.beginPath();
+        ctx.moveTo(HR * 0.55, 0);
+        ctx.lineTo(-HR * 0.3, HR * 0.38);
+        ctx.lineTo(-HR * 0.3, -HR * 0.38);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+        const lx = pos.x + (pos.x - sp.x) / Math.hypot(pos.x - sp.x, pos.y - sp.y || 1) * (HR + 10);
+        const ly = pos.y + (pos.y - sp.y) / Math.hypot(pos.x - sp.x || 1, pos.y - sp.y) * (HR + 10);
+        ctx.fillStyle = color;
+        ctx.font = "bold 9px Courier New";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, lx, ly);
+        ctx.textBaseline = "alphabetic";
+      };
+      drawHandle(this._progHandle, "#44ff88", "PRO");
+      drawHandle(this._retroHandle, "#ff4444", "RET");
+      drawHandle(this._normHandle, "#ff88ff", "NOR");
+      drawHandle(this._antinormHandle, "#44ffff", "ANT");
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, 9, 0, Math.PI * 2);
+      ctx.fillStyle = THEME.warning;
+      ctx.fill();
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.fillStyle = "#000";
+      ctx.font = "bold 11px Courier New";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("\u0394", sp.x, sp.y);
+      ctx.textBaseline = "alphabetic";
+      ctx.restore();
+      this._drawNodeInfoPanel(missionTime, sp);
+    }
+    _drawNodeInfoPanel(missionTime, nodeSP) {
+      const ctx = this.ctx;
+      const node = this.node;
+      const totalDV = Math.hypot(node.progradeDV, node.normalDV);
+      const timeToNode = node.time - missionTime;
+      const pw = 210, ph = 100;
+      const px = nodeSP.x + 20 + pw < this.W ? nodeSP.x + 20 : nodeSP.x - pw - 20;
+      const py = Math.max(10, Math.min(this.H - ph - 10, nodeSP.y - ph / 2));
+      ctx.fillStyle = "rgba(8,14,24,0.92)";
+      this._roundRect(px, py, pw, ph, 6);
+      ctx.fill();
+      ctx.strokeStyle = THEME.warning;
+      ctx.lineWidth = 1;
+      this._roundRect(px, py, pw, ph, 6);
+      ctx.stroke();
+      ctx.fillStyle = THEME.warning;
+      ctx.font = "bold 11px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("MANEUVER NODE", px + pw / 2, py + 16);
+      const rows = [
+        ["\u0394V", `${totalDV.toFixed(1)} m/s`],
+        ["PRO", `${node.progradeDV.toFixed(1)} m/s`],
+        ["RAD", `${node.normalDV.toFixed(1)} m/s`],
+        ["T\u2212", timeToNode < 0 ? "PAST NODE" : this._fmtTime(timeToNode)]
+      ];
+      rows.forEach(([k, v], i) => {
+        const ry = py + 32 + i * 18;
+        ctx.fillStyle = THEME.textDim;
+        ctx.font = "10px Courier New";
+        ctx.textAlign = "left";
+        ctx.fillText(k, px + 10, ry);
+        ctx.fillStyle = k === "T\u2212" && timeToNode < 60 ? THEME.danger : k === "\u0394V" ? THEME.accent : THEME.text;
+        ctx.textAlign = "right";
+        ctx.fillText(v, px + pw - 10, ry);
+      });
+      ctx.fillStyle = THEME.textDim;
+      ctx.font = "9px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("[click node to delete]", px + pw / 2, py + ph - 6);
+    }
+    // ─── Earth & Grid ─────────────────────────────────────────────────────────
     _drawEarth() {
       const ctx = this.ctx;
       const centre = this._w2s({ x: 0, y: 0 });
@@ -3018,55 +3546,7 @@
       }
       ctx.setLineDash([]);
     }
-    _drawTrajectory(_rocket) {
-      const ctx = this.ctx;
-      const path = this.cachedPath;
-      if (path.length < 2)
-        return;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 6]);
-      for (let i = 1; i < path.length; i++) {
-        const s0 = this._w2s(path[i - 1]);
-        const s1 = this._w2s(path[i]);
-        const alt = vec2.length(path[i]) - R_EARTH;
-        const inAtmo = this.atmo.isInAtmosphere(alt);
-        ctx.strokeStyle = inAtmo ? "rgba(255,140,40,0.55)" : "rgba(0,200,255,0.45)";
-        ctx.beginPath();
-        ctx.moveTo(s0.x, s0.y);
-        ctx.lineTo(s1.x, s1.y);
-        ctx.stroke();
-      }
-      ctx.setLineDash([]);
-      let minR = Infinity, maxR = -Infinity;
-      let minPos = path[0], maxPos = path[0];
-      for (const p of path) {
-        const r = vec2.length(p);
-        if (r < minR) {
-          minR = r;
-          minPos = p;
-        }
-        if (r > maxR) {
-          maxR = r;
-          maxPos = p;
-        }
-      }
-      this._drawOrbMarker(minPos, "Pe", THEME.warning);
-      this._drawOrbMarker(maxPos, "Ap", THEME.accent);
-    }
-    _drawOrbMarker(worldPos, label, color) {
-      const ctx = this.ctx;
-      const sp = this._w2s(worldPos);
-      ctx.beginPath();
-      ctx.arc(sp.x, sp.y, 5, 0, Math.PI * 2);
-      ctx.fillStyle = color;
-      ctx.fill();
-      ctx.fillStyle = color;
-      ctx.font = "bold 11px Courier New";
-      ctx.textAlign = "left";
-      const alt = vec2.length(worldPos) - R_EARTH;
-      const altStr = alt < 1e6 ? `${(alt / 1e3).toFixed(1)} km` : `${(alt / 1e6).toFixed(3)} Mm`;
-      ctx.fillText(`${label}: ${altStr}`, sp.x + 8, sp.y - 4);
-    }
+    // ─── Rocket Marker ────────────────────────────────────────────────────────
     _drawRocketMarker(rocket, time) {
       const ctx = this.ctx;
       const sp = this._w2s(rocket.body.pos);
@@ -3095,18 +3575,7 @@
       ctx.textAlign = "left";
       ctx.fillText("\u25B2 Rocket", sp.x + 8, sp.y + 4);
     }
-    _drawManeuverNodes() {
-      const ctx = this.ctx;
-      for (const node of this.maneuverNodes) {
-        if (node.executed)
-          continue;
-        ctx.fillStyle = THEME.warning;
-        ctx.font = "bold 12px Courier New";
-        ctx.textAlign = "center";
-        ctx.fillText("\u2B21 Maneuver Node (stub)", this.W / 2, this.H - 100);
-        break;
-      }
-    }
+    // ─── Orbital Info Panel ───────────────────────────────────────────────────
     _drawOrbitalInfo(rocket) {
       const ctx = this.ctx;
       const { W } = this;
@@ -3142,6 +3611,7 @@
         ctx.fillText(v, px + pw - 10, ry);
       });
     }
+    // ─── Utilities ────────────────────────────────────────────────────────────
     _roundRect(x, y, w, h, r) {
       const ctx = this.ctx;
       ctx.beginPath();
@@ -3161,39 +3631,6 @@
       const m = Math.floor(seconds % 3600 / 60);
       const s = Math.floor(seconds % 60);
       return `${h}h ${m}m ${s}s`;
-    }
-    // ─── Pan / Zoom Input ────────────────────────────────────────────────────
-    handleMouseDown(mx, my) {
-      this.isDragging = true;
-      this.dragStartX = mx - this.panX;
-      this.dragStartY = my - this.panY;
-    }
-    handleMouseMove(mx, my) {
-      if (!this.isDragging)
-        return;
-      this.panX = mx - this.dragStartX;
-      this.panY = my - this.dragStartY;
-    }
-    handleMouseUp() {
-      this.isDragging = false;
-    }
-    handleWheel(e) {
-      const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
-      this.userScale = Math.max(0.25, Math.min(80, this.userScale * factor));
-    }
-    /** Reset pan/zoom to default (called when map is opened) */
-    resetView() {
-      this.panX = 0;
-      this.panY = 0;
-      this.userScale = 1;
-    }
-    /** Add a maneuver node (for future use) */
-    addManeuverNode(node) {
-      this.maneuverNodes.push(node);
-    }
-    /** Clear all maneuver nodes */
-    clearManeuverNodes() {
-      this.maneuverNodes = [];
     }
   };
 
@@ -3335,7 +3772,7 @@
       const frame = this.physics.lastFrame;
       if (this.isMapOpen) {
         this.renderer.renderFlight(this.rocket, frame, this.throttle);
-        this.mapView.render(this.rocket, this.wallTime, () => {
+        this.mapView.render(this.rocket, this.wallTime, this.physics.missionTime, () => {
           this.isMapOpen = false;
         });
       } else {
@@ -3348,6 +3785,7 @@
           this.physics.missionTime,
           warpFactor
         );
+        this.renderer.renderBurnGuidance(this.rocket, this.mapView.node, this.physics.missionTime);
       }
     }
     // ─── Input Processing ──────────────────────────────────────────────────────
@@ -3652,4 +4090,3 @@
   requestAnimationFrame(loop);
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 })();
-//# sourceMappingURL=bundle.js.map

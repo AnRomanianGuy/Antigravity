@@ -199,7 +199,7 @@ export class Game {
     if (this.isMapOpen) {
       // Render flight behind map
       this.renderer.renderFlight(this.rocket, frame, this.throttle);
-      this.mapView.render(this.rocket, this.wallTime, () => { this.isMapOpen = false; });
+      this.mapView.render(this.rocket, this.wallTime, this.physics.missionTime, () => { this.isMapOpen = false; });
     } else {
       this.renderer.renderFlight(this.rocket, frame, this.throttle);
       this.renderer.renderHUD(
@@ -210,6 +210,7 @@ export class Game {
         this.physics.missionTime,
         warpFactor,
       );
+      this.renderer.renderBurnGuidance(this.rocket, this.mapView.node, this.physics.missionTime);
     }
   }
 
