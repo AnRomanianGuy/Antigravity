@@ -1409,7 +1409,7 @@
       const ctx = this.ctx;
       if (rocket.parts.length === 0)
         return;
-      const totalH = rocket.parts.reduce((s, p) => s + p.def.renderH * scale, 0);
+      const totalH = rocket.parts.reduce((s, p) => p.def.radialMount ? s : s + p.def.renderH * scale, 0);
       let yBottom = totalH / 2;
       const mainHW = _Renderer.STACK_HALF_W * scale;
       const radGap = _Renderer.RADIAL_GAP * scale;
@@ -1466,7 +1466,8 @@
             this._drawPartHeatGlow(ctx, x, y, w, h, part.currentTemperature, scale);
           }
         }
-        yBottom -= h;
+        if (!part.def.radialMount)
+          yBottom -= h;
       }
     }
     _drawPartDecoration(type, x, y, w, h, scale, part) {
@@ -1735,7 +1736,7 @@
     }
     _drawExhaustPlume(rocket, scale, throttle) {
       const ctx = this.ctx;
-      const totalH = rocket.parts.reduce((s, p) => s + p.def.renderH * scale, 0);
+      const totalH = rocket.parts.reduce((s, p) => p.def.radialMount ? s : s + p.def.renderH * scale, 0);
       const stackBottom = totalH / 2;
       const mainHW = _Renderer.STACK_HALF_W * scale;
       const radGap = _Renderer.RADIAL_GAP * scale;
@@ -1755,7 +1756,8 @@
           this._drawOnePlume(-sideX, yBot, scale, 1, true);
           this._drawOnePlume(sideX, yBot, scale, 1, true);
         }
-        yBot -= h;
+        if (!part.def.radialMount)
+          yBot -= h;
       }
       ctx.restore();
     }
@@ -1826,7 +1828,7 @@
         return;
       const ctx = this.ctx;
       const t = this.time;
-      const totalH = rocket.parts.reduce((s, p) => s + p.def.renderH * scale, 0);
+      const totalH = rocket.parts.reduce((s, p) => p.def.radialMount ? s : s + p.def.renderH * scale, 0);
       const halfH = totalH / 2;
       const maxW = rocket.parts.reduce((m, p) => Math.max(m, p.def.renderW * scale), 44 * scale);
       const noseIsWindward = noseExp < 0;
@@ -1952,7 +1954,7 @@
       const exposure = Math.abs(frame.noseExposure);
       if (intensity < 0.01 || exposure < 0.05)
         return;
-      const totalH = rocket.parts.reduce((s, p) => s + p.def.renderH * scale, 0);
+      const totalH = rocket.parts.reduce((s, p) => p.def.radialMount ? s : s + p.def.renderH * scale, 0);
       const halfH = totalH / 2;
       const maxW = rocket.parts.reduce((m, p) => Math.max(m, p.def.renderW * scale), 44 * scale);
       const noseIsWindward = frame.noseExposure < 0;
@@ -2046,7 +2048,7 @@
       if (rocket.parts.length === 0)
         return [];
       const available = bottomY - 40;
-      const naturalH = rocket.parts.reduce((s, p) => s + p.def.renderH, 0);
+      const naturalH = rocket.parts.reduce((s, p) => p.def.radialMount ? s : s + p.def.renderH, 0);
       const scale = naturalH > 0 ? Math.min(1.8, available / naturalH) : 1.8;
       const bounds = [];
       const mainHW = _Renderer.STACK_HALF_W * scale;
@@ -2134,7 +2136,8 @@
             ctx.fillText(bLbl, bx2, by2 + 3);
           }
         }
-        yBottom -= h;
+        if (!part.def.radialMount)
+          yBottom -= h;
       }
       const topY = yBottom;
       ctx.beginPath();

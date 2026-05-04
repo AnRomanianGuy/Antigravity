@@ -361,7 +361,7 @@ export class Renderer {
     const ctx = this.ctx;
     if (rocket.parts.length === 0) return;
 
-    const totalH = rocket.parts.reduce((s, p) => s + p.def.renderH * scale, 0);
+    const totalH = rocket.parts.reduce((s, p) => p.def.radialMount ? s : s + p.def.renderH * scale, 0);
     let yBottom = totalH / 2;
 
     const mainHW  = Renderer.STACK_HALF_W  * scale;
@@ -426,7 +426,7 @@ export class Renderer {
         }
       }
 
-      yBottom -= h;
+      if (!part.def.radialMount) yBottom -= h;
     }
   }
 
@@ -716,7 +716,7 @@ export class Renderer {
 
   private _drawExhaustPlume(rocket: Rocket, scale: number, throttle: number): void {
     const ctx     = this.ctx;
-    const totalH  = rocket.parts.reduce((s, p) => s + p.def.renderH * scale, 0);
+    const totalH  = rocket.parts.reduce((s, p) => p.def.radialMount ? s : s + p.def.renderH * scale, 0);
     const stackBottom = totalH / 2;
 
     const mainHW = Renderer.STACK_HALF_W * scale;
@@ -744,7 +744,7 @@ export class Renderer {
         this._drawOnePlume(-sideX, yBot, scale, 1.0, true);
         this._drawOnePlume( sideX, yBot, scale, 1.0, true);
       }
-      yBot -= h;
+      if (!part.def.radialMount) yBot -= h;
     }
 
     ctx.restore();
@@ -808,7 +808,7 @@ export class Renderer {
     const ctx = this.ctx;
     const t   = this.time;
 
-    const totalH = rocket.parts.reduce((s, p) => s + p.def.renderH * scale, 0);
+    const totalH = rocket.parts.reduce((s, p) => p.def.radialMount ? s : s + p.def.renderH * scale, 0);
     const halfH  = totalH / 2;
     const maxW   = rocket.parts.reduce((m, p) => Math.max(m, p.def.renderW * scale), 44 * scale);
 
@@ -963,7 +963,7 @@ export class Renderer {
     const exposure  = Math.abs(frame.noseExposure);
     if (intensity < 0.01 || exposure < 0.05) return;
 
-    const totalH = rocket.parts.reduce((s, p) => s + p.def.renderH * scale, 0);
+    const totalH = rocket.parts.reduce((s, p) => p.def.radialMount ? s : s + p.def.renderH * scale, 0);
     const halfH  = totalH / 2;
     // Widest part — governs glow spread
     const maxW   = rocket.parts.reduce((m, p) => Math.max(m, p.def.renderW * scale), 44 * scale);
@@ -1086,8 +1086,9 @@ export class Renderer {
     if (rocket.parts.length === 0) return [];
 
     // Auto-scale so the rocket fits in the available vertical space
+    // Radial parts share vertical space with the centre stack — exclude them from height
     const available = bottomY - 40;   // 40 px top margin
-    const naturalH  = rocket.parts.reduce((s, p) => s + p.def.renderH, 0);
+    const naturalH  = rocket.parts.reduce((s, p) => p.def.radialMount ? s : s + p.def.renderH, 0);
     const scale = naturalH > 0 ? Math.min(1.8, available / naturalH) : 1.8;
 
     const bounds: Array<{id: string, x: number, y: number, w: number, h: number}> = [];
@@ -1183,7 +1184,7 @@ export class Renderer {
         }
       }
 
-      yBottom -= h;
+      if (!part.def.radialMount) yBottom -= h;
     }
 
     // Attachment node at the top of the stack
