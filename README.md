@@ -1,117 +1,61 @@
-# 🚀 Antigravity
+# Antigravity
 
-Antigravity is a lightweight 2D orbital rocket simulator inspired by realistic spaceflight physics.
+A lightweight 2D rocket simulator that runs in the browser. Build a rocket, launch it, and try to reach orbit.
 
-The goal of the project is to simulate rocket launches, atmospheric flight, orbital mechanics, and reentry as realistically as possible — all directly in the browser.
+Inspired by the physics of real spaceflight — gravity, thrust, atmospheric drag, and reentry heating are all modeled.
 
----
-
-## 🌐 Play the Game
-
-You can run Antigravity in multiple ways:
-
-### 🟢 Option 1 — GitHub Pages (recommended)
-Play instantly in your browser:
-
-👉 https://anromanianguy.github.io/Antigravity/
-
-(No installation required)
+**[Play on GitHub Pages](https://anromanianguy.github.io/Antigravity/)**
 
 ---
 
-### 🟡 Option 2 — Download & Run Locally
+## Run locally
 
-Clone the repository and run it on your machine:
+```bash
+git clone https://github.com/anromanianguy/Antigravity.git
+cd Antigravity
+npm install
+npm run dev
+```
 
-bash id="runlocal1" git clone https://github.com/your-username/antigravity.git cd antigravity npm install npm run dev 
-
-Then open:
-http://localhost:5173
-
----
-
-## ✨ Features
-
-- 🧩 Modular rocket building (VAB system)
-- 🚀 Staging system (engines, decouplers)
-- 🌍 Realistic-ish physics:
-  - Gravity
-  - Thrust & fuel consumption
-  - Atmospheric drag
-- 🌫️ Atmospheric simulation:
-  - Density based on altitude
-  - Visual gradient (ground → space)
-- 🔥 Aerodynamic heating:
-  - Reentry plasma effects
-  - Temperature-based warnings
-- 💥 Destruction system:
-  - Overheating can destroy parts
-- 🧭 Map View:
-  - Apoapsis (AP)
-  - Periapsis (PE)
-  - Trajectory prediction
-- 📊 Dual UI:
-  - Normal mode
-  - Advanced telemetry (planned)
+Then open `http://localhost:5173`.
 
 ---
 
-## 🎮 Gameplay
+## Features
 
-Build your rocket, launch from Earth, and try to:
-
-- Reach orbit
-- Control your trajectory
-- Survive atmospheric reentry
-- (Coming soon) Travel to the Moon 🌕
+- Modular rocket builder (VAB-style)
+- Staging system — engines, decouplers
+- Physics: gravity, thrust, fuel consumption, atmospheric drag
+- Atmosphere simulation with altitude-based density and visual sky gradient
+- Aerodynamic heating with reentry plasma effects and part destruction
+- Map view with apoapsis/periapsis display and trajectory prediction
+- Maneuver nodes
 
 ---
 
-## 🛠️ Tech Stack
+## Tech stack
 
 - TypeScript
 - HTML5 Canvas
-- Node.js
+- esbuild
 
 ---
 
-## 🎯 Roadmap
+## Roadmap
 
-- [x] Rocket building system (VAB)
-- [x] Launch & staging
+- [x] Rocket building
+- [x] Launch and staging
 - [x] Atmospheric simulation
-- [x] Heating & reentry effects
-- [x] Map view with AP/PE
-- [ ] Maneuver nodes
-- [ ] Moon (second gravity body)
-- [ ] Orbital transfers
+- [x] Heating and reentry
+- [x] Map view (AP/PE, trajectory)
+- [x] Maneuver nodes
+- [ ] Second gravity body (Moon,WIP)
+- [ ] Orbital transfer planning
 - [ ] Landing system
 - [ ] Advanced telemetry UI
 
 ---
 
-## 🧠 Philosophy
+## License
 
-Antigravity focuses on:
-
-> Physics first, visuals second
-
-The goal is to create a system that feels real, not just looks good.
-
----
-
-## 📸 Screenshots
-
-(Add your screenshots here)
-
----
-
-## 🤝 Contributing
-
-Suggestions and ideas are welcome.
-
----
-
-## 📄 License
-
-MI
+MIT
