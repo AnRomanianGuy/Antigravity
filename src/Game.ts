@@ -13,9 +13,9 @@
  *   spiral-of-death on slow devices.  Each step is fixed at PHYSICS_DT.
  */
 
-import { GameScreen, InputState } from './types';
+import { GameScreen, InputState, THEME } from './types';
 import { Rocket } from './Rocket';
-import { PhysicsEngine } from './Physics';
+import { PhysicsEngine, R_EARTH, MU_EARTH, R_MOON, MU_MOON, getMoonPosition, getMoonVelocity } from './Physics';
 import { Atmosphere } from './Atmosphere';
 import { Renderer } from './Renderer';
 import { UI } from './UI';
@@ -88,10 +88,19 @@ export class Game {
   private messageBtn   = '';
   private messageAction: (() => void) | null = null;
 
+  // ── Cheat menu ────────────────────────────────────────────────────────────
+  private cheatOpen        = false;
+  private cheatUnlimFuel   = false;
+  private ctx: CanvasRenderingContext2D | null = null;
+
+  /** Bounding boxes of cheat menu buttons (rebuilt each render) */
+  private _cheatBtns: Array<{ label: string; x: number; y: number; w: number; h: number; action: () => void }> = [];
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('Canvas 2D context not available.');
+    this.ctx = ctx;
 
     this.atmo     = new Atmosphere();
     this.physics  = new PhysicsEngine(this.atmo);
@@ -138,6 +147,9 @@ export class Game {
     if (this.showMessage && this.messageAction) {
       this.ui.renderMessage(this.messageTitle, this.messageBody, this.messageBtn, this.messageAction);
     }
+
+    // Cheat menu — always topmost
+    if (this.cheatOpen) this._renderCheatMenu();
   }
 
   // ─── Screen Update Methods ─────────────────────────────────────────────────
@@ -199,6 +211,16 @@ export class Game {
       if (this.accumulator > PHYSICS_DT * maxSteps) {
         this.accumulator = 0;
       }
+    }
+
+    // ── Unlimited fuel cheat ──────────────────────────────────────────────
+    if (this.cheatUnlimFuel) {
+      for (const part of this.rocket.parts) {
+        if (part.def.maxFuelMass > 0) {
+          part.fuelRemaining = part.def.maxFuelMass;
+        }
+      }
+      this.rocket.body.mass = this.rocket.getTotalMass();
     }
 
     // ── Check mission events ──────────────────────────────────────────────
@@ -399,8 +421,16 @@ export class Game {
         case 'Period':
           this.warpUpPressed = true;
           break;
+        case 'F1':
+          if (e.ctrlKey) {
+            e.preventDefault();
+            this.cheatOpen = !this.cheatOpen;
+          }
+          break;
         case 'Escape':
-          if (this.screen === GameScreen.VAB) {
+          if (this.cheatOpen) {
+            this.cheatOpen = false;
+          } else if (this.screen === GameScreen.VAB) {
             this.ui.cancelVABGhost();
           } else {
             this.escPressed = true;
@@ -451,6 +481,16 @@ export class Game {
 
     this.canvas.addEventListener('click', (e: MouseEvent) => {
       const mx = e.clientX, my = e.clientY;
+
+      // Cheat menu takes top priority
+      if (this.cheatOpen) {
+        for (const btn of this._cheatBtns) {
+          if (mx >= btn.x && mx <= btn.x + btn.w && my >= btn.y && my <= btn.y + btn.h) {
+            btn.action();
+          }
+        }
+        return;
+      }
 
       // Message overlay takes priority
       if (this.showMessage && this.messageAction) {
@@ -504,5 +544,182 @@ export class Game {
           break;
       }
     });
+  }
+
+  // ─── Cheat Menu ────────────────────────────────────────────────────────────
+
+  private _renderCheatMenu(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+
+    this._cheatBtns = [];
+
+    const pw = 340, ph = 280;
+    const px = Math.round((W - pw) / 2);
+    const py = Math.round((H - ph) / 2);
+
+    // Dark scrim
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillRect(0, 0, W, H);
+
+    // Panel
+    ctx.fillStyle = '#050d18';
+    this._cheatRoundRect(ctx, px, py, pw, ph, 8);
+    ctx.fill();
+    ctx.strokeStyle = '#ff4444';
+    ctx.lineWidth = 1.5;
+    this._cheatRoundRect(ctx, px, py, pw, ph, 8);
+    ctx.stroke();
+
+    // ── Header ───────────────────────────────────────────────────────────
+    ctx.fillStyle = '#ff4444';
+    ctx.font = 'bold 15px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText('⚠  DEBUG / CHEAT MENU  ⚠', px + pw / 2, py + 24);
+
+    ctx.fillStyle = 'rgba(255,68,68,0.5)';
+    ctx.fillRect(px + 12, py + 32, pw - 24, 1);
+
+    ctx.fillStyle = '#4a6080';
+    ctx.font = '10px Courier New';
+    ctx.fillText('Ctrl+F1 or Esc to close', px + pw / 2, py + 46);
+
+    // ── Buttons ───────────────────────────────────────────────────────────
+    const bw = pw - 40, bh = 38, bx = px + 20;
+    const gap = 12;
+    let by = py + 60;
+
+    const addBtn = (label: string, active: boolean | null, action: () => void) => {
+      const hovering = this.ui.mouseX >= bx && this.ui.mouseX <= bx + bw
+                    && this.ui.mouseY >= by && this.ui.mouseY <= by + bh;
+
+      ctx.fillStyle = active === true  ? 'rgba(0,200,80,0.18)'
+                    : active === false ? 'rgba(80,20,20,0.35)'
+                    : hovering         ? 'rgba(0,100,180,0.30)'
+                    :                    'rgba(10,20,40,0.80)';
+      this._cheatRoundRect(ctx, bx, by, bw, bh, 5);
+      ctx.fill();
+
+      const borderCol = active === true  ? '#00cc55'
+                      : active === false ? '#883333'
+                      : hovering         ? '#0088cc'
+                      :                    '#1e3a5f';
+      ctx.strokeStyle = borderCol;
+      ctx.lineWidth = hovering ? 1.5 : 1;
+      this._cheatRoundRect(ctx, bx, by, bw, bh, 5);
+      ctx.stroke();
+
+      ctx.fillStyle = active === true ? '#44ff88'
+                    : hovering        ? '#88ccff'
+                    :                   '#c8d8e8';
+      ctx.font = 'bold 12px Courier New';
+      ctx.textAlign = 'left';
+      ctx.fillText(label, bx + 14, by + bh / 2 + 4);
+
+      if (active !== null) {
+        const tag = active ? '● ON' : '○ OFF';
+        ctx.fillStyle = active ? '#44ff88' : '#664444';
+        ctx.font = 'bold 11px Courier New';
+        ctx.textAlign = 'right';
+        ctx.fillText(tag, bx + bw - 14, by + bh / 2 + 4);
+      }
+
+      this._cheatBtns.push({ label, x: bx, y: by, w: bw, h: bh, action });
+      by += bh + gap;
+    };
+
+    addBtn(
+      'UNLIMITED FUEL',
+      this.cheatUnlimFuel,
+      () => { this.cheatUnlimFuel = !this.cheatUnlimFuel; },
+    );
+
+    addBtn(
+      'TELEPORT → LOW EARTH ORBIT  (250 km)',
+      null,
+      () => { this._cheatTeleportEarthOrbit(); this.cheatOpen = false; },
+    );
+
+    addBtn(
+      'TELEPORT → LUNAR ORBIT  (100 km)',
+      null,
+      () => { this._cheatTeleportLunarOrbit(); this.cheatOpen = false; },
+    );
+
+    addBtn(
+      'REFILL ALL TANKS',
+      null,
+      () => {
+        for (const p of this.rocket.parts) {
+          if (p.def.maxFuelMass > 0) p.fuelRemaining = p.def.maxFuelMass;
+        }
+        this.rocket.body.mass = this.rocket.getTotalMass();
+      },
+    );
+
+    addBtn(
+      'CLOSE',
+      null,
+      () => { this.cheatOpen = false; },
+    );
+
+    // Footer
+    ctx.fillStyle = '#1e2a3a';
+    ctx.font = '9px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText('For testing purposes only. Use responsibly.', px + pw / 2, py + ph - 10);
+  }
+
+  private _cheatTeleportEarthOrbit(): void {
+    const alt = 250_000;
+    const r   = R_EARTH + alt;
+    const v   = Math.sqrt(MU_EARTH / r);
+
+    this.rocket.body.pos    = { x: 0,  y: r };
+    this.rocket.body.vel    = { x: v,  y: 0 };
+    this.rocket.body.angle  = 0;
+    this.rocket.body.angVel = 0;
+    this.rocket.hasLaunched = true;
+    this.isMapOpen          = false;
+    this.warpIndex          = 0;
+    this._switchTo(GameScreen.FLIGHT);
+  }
+
+  private _cheatTeleportLunarOrbit(): void {
+    const alt      = 100_000;
+    const r        = R_MOON + alt;
+    const v        = Math.sqrt(MU_MOON / r);
+    const moonPos  = getMoonPosition(this.physics.missionTime);
+    const moonVel  = getMoonVelocity(this.physics.missionTime);
+
+    // Place above the Moon (+Y from Moon centre) with circular prograde velocity
+    this.rocket.body.pos    = { x: moonPos.x,     y: moonPos.y + r  };
+    this.rocket.body.vel    = { x: moonVel.x + v, y: moonVel.y      };
+    this.rocket.body.angle  = 0;
+    this.rocket.body.angVel = 0;
+    this.rocket.hasLaunched = true;
+    this.isMapOpen          = false;
+    this.warpIndex          = 0;
+    this._switchTo(GameScreen.FLIGHT);
+  }
+
+  private _cheatRoundRect(
+    ctx: CanvasRenderingContext2D,
+    x: number, y: number, w: number, h: number, r: number,
+  ): void {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.arcTo(x + w, y,     x + w, y + r,     r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+    ctx.lineTo(x + r, y + h);
+    ctx.arcTo(x,     y + h, x,     y + h - r, r);
+    ctx.lineTo(x, y + r);
+    ctx.arcTo(x,     y,     x + r, y,          r);
+    ctx.closePath();
   }
 }

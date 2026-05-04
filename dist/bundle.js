@@ -4238,10 +4238,17 @@
       this.messageBody = "";
       this.messageBtn = "";
       this.messageAction = null;
+      // ── Cheat menu ────────────────────────────────────────────────────────────
+      this.cheatOpen = false;
+      this.cheatUnlimFuel = false;
+      this.ctx = null;
+      /** Bounding boxes of cheat menu buttons (rebuilt each render) */
+      this._cheatBtns = [];
       this.canvas = canvas2;
       const ctx = canvas2.getContext("2d");
       if (!ctx)
         throw new Error("Canvas 2D context not available.");
+      this.ctx = ctx;
       this.atmo = new Atmosphere();
       this.physics = new PhysicsEngine(this.atmo);
       this.rocket = new Rocket();
@@ -4286,6 +4293,8 @@
       if (this.showMessage && this.messageAction) {
         this.ui.renderMessage(this.messageTitle, this.messageBody, this.messageBtn, this.messageAction);
       }
+      if (this.cheatOpen)
+        this._renderCheatMenu();
     }
     // ─── Screen Update Methods ─────────────────────────────────────────────────
     _updateMainMenu() {
@@ -4338,6 +4347,14 @@
         if (this.accumulator > PHYSICS_DT * maxSteps) {
           this.accumulator = 0;
         }
+      }
+      if (this.cheatUnlimFuel) {
+        for (const part of this.rocket.parts) {
+          if (part.def.maxFuelMass > 0) {
+            part.fuelRemaining = part.def.maxFuelMass;
+          }
+        }
+        this.rocket.body.mass = this.rocket.getTotalMass();
       }
       this._checkFlightEvents();
       const frame = this.physics.lastFrame;
@@ -4537,8 +4554,16 @@
           case "Period":
             this.warpUpPressed = true;
             break;
+          case "F1":
+            if (e.ctrlKey) {
+              e.preventDefault();
+              this.cheatOpen = !this.cheatOpen;
+            }
+            break;
           case "Escape":
-            if (this.screen === 2 /* VAB */) {
+            if (this.cheatOpen) {
+              this.cheatOpen = false;
+            } else if (this.screen === 2 /* VAB */) {
               this.ui.cancelVABGhost();
             } else {
               this.escPressed = true;
@@ -4597,6 +4622,14 @@
       }, { passive: false });
       this.canvas.addEventListener("click", (e) => {
         const mx = e.clientX, my = e.clientY;
+        if (this.cheatOpen) {
+          for (const btn of this._cheatBtns) {
+            if (mx >= btn.x && mx <= btn.x + btn.w && my >= btn.y && my <= btn.y + btn.h) {
+              btn.action();
+            }
+          }
+          return;
+        }
         if (this.showMessage && this.messageAction) {
           this.ui.handleMessageClick(mx, my, this.messageAction);
           return;
@@ -4649,6 +4682,149 @@
             break;
         }
       });
+    }
+    // ─── Cheat Menu ────────────────────────────────────────────────────────────
+    _renderCheatMenu() {
+      const ctx = this.ctx;
+      if (!ctx)
+        return;
+      const W = this.canvas.width;
+      const H = this.canvas.height;
+      this._cheatBtns = [];
+      const pw = 340, ph = 280;
+      const px = Math.round((W - pw) / 2);
+      const py = Math.round((H - ph) / 2);
+      ctx.fillStyle = "rgba(0,0,0,0.65)";
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = "#050d18";
+      this._cheatRoundRect(ctx, px, py, pw, ph, 8);
+      ctx.fill();
+      ctx.strokeStyle = "#ff4444";
+      ctx.lineWidth = 1.5;
+      this._cheatRoundRect(ctx, px, py, pw, ph, 8);
+      ctx.stroke();
+      ctx.fillStyle = "#ff4444";
+      ctx.font = "bold 15px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("\u26A0  DEBUG / CHEAT MENU  \u26A0", px + pw / 2, py + 24);
+      ctx.fillStyle = "rgba(255,68,68,0.5)";
+      ctx.fillRect(px + 12, py + 32, pw - 24, 1);
+      ctx.fillStyle = "#4a6080";
+      ctx.font = "10px Courier New";
+      ctx.fillText("Ctrl+F1 or Esc to close", px + pw / 2, py + 46);
+      const bw = pw - 40, bh = 38, bx = px + 20;
+      const gap = 12;
+      let by = py + 60;
+      const addBtn = (label, active, action) => {
+        const hovering = this.ui.mouseX >= bx && this.ui.mouseX <= bx + bw && this.ui.mouseY >= by && this.ui.mouseY <= by + bh;
+        ctx.fillStyle = active === true ? "rgba(0,200,80,0.18)" : active === false ? "rgba(80,20,20,0.35)" : hovering ? "rgba(0,100,180,0.30)" : "rgba(10,20,40,0.80)";
+        this._cheatRoundRect(ctx, bx, by, bw, bh, 5);
+        ctx.fill();
+        const borderCol = active === true ? "#00cc55" : active === false ? "#883333" : hovering ? "#0088cc" : "#1e3a5f";
+        ctx.strokeStyle = borderCol;
+        ctx.lineWidth = hovering ? 1.5 : 1;
+        this._cheatRoundRect(ctx, bx, by, bw, bh, 5);
+        ctx.stroke();
+        ctx.fillStyle = active === true ? "#44ff88" : hovering ? "#88ccff" : "#c8d8e8";
+        ctx.font = "bold 12px Courier New";
+        ctx.textAlign = "left";
+        ctx.fillText(label, bx + 14, by + bh / 2 + 4);
+        if (active !== null) {
+          const tag = active ? "\u25CF ON" : "\u25CB OFF";
+          ctx.fillStyle = active ? "#44ff88" : "#664444";
+          ctx.font = "bold 11px Courier New";
+          ctx.textAlign = "right";
+          ctx.fillText(tag, bx + bw - 14, by + bh / 2 + 4);
+        }
+        this._cheatBtns.push({ label, x: bx, y: by, w: bw, h: bh, action });
+        by += bh + gap;
+      };
+      addBtn(
+        "UNLIMITED FUEL",
+        this.cheatUnlimFuel,
+        () => {
+          this.cheatUnlimFuel = !this.cheatUnlimFuel;
+        }
+      );
+      addBtn(
+        "TELEPORT \u2192 LOW EARTH ORBIT  (250 km)",
+        null,
+        () => {
+          this._cheatTeleportEarthOrbit();
+          this.cheatOpen = false;
+        }
+      );
+      addBtn(
+        "TELEPORT \u2192 LUNAR ORBIT  (100 km)",
+        null,
+        () => {
+          this._cheatTeleportLunarOrbit();
+          this.cheatOpen = false;
+        }
+      );
+      addBtn(
+        "REFILL ALL TANKS",
+        null,
+        () => {
+          for (const p of this.rocket.parts) {
+            if (p.def.maxFuelMass > 0)
+              p.fuelRemaining = p.def.maxFuelMass;
+          }
+          this.rocket.body.mass = this.rocket.getTotalMass();
+        }
+      );
+      addBtn(
+        "CLOSE",
+        null,
+        () => {
+          this.cheatOpen = false;
+        }
+      );
+      ctx.fillStyle = "#1e2a3a";
+      ctx.font = "9px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("For testing purposes only. Use responsibly.", px + pw / 2, py + ph - 10);
+    }
+    _cheatTeleportEarthOrbit() {
+      const alt = 25e4;
+      const r = R_EARTH + alt;
+      const v = Math.sqrt(MU_EARTH / r);
+      this.rocket.body.pos = { x: 0, y: r };
+      this.rocket.body.vel = { x: v, y: 0 };
+      this.rocket.body.angle = 0;
+      this.rocket.body.angVel = 0;
+      this.rocket.hasLaunched = true;
+      this.isMapOpen = false;
+      this.warpIndex = 0;
+      this._switchTo(4 /* FLIGHT */);
+    }
+    _cheatTeleportLunarOrbit() {
+      const alt = 1e5;
+      const r = R_MOON + alt;
+      const v = Math.sqrt(MU_MOON / r);
+      const moonPos = getMoonPosition(this.physics.missionTime);
+      const moonVel = getMoonVelocity(this.physics.missionTime);
+      this.rocket.body.pos = { x: moonPos.x, y: moonPos.y + r };
+      this.rocket.body.vel = { x: moonVel.x + v, y: moonVel.y };
+      this.rocket.body.angle = 0;
+      this.rocket.body.angVel = 0;
+      this.rocket.hasLaunched = true;
+      this.isMapOpen = false;
+      this.warpIndex = 0;
+      this._switchTo(4 /* FLIGHT */);
+    }
+    _cheatRoundRect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.arcTo(x + w, y, x + w, y + r, r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+      ctx.lineTo(x + r, y + h);
+      ctx.arcTo(x, y + h, x, y + h - r, r);
+      ctx.lineTo(x, y + r);
+      ctx.arcTo(x, y, x + r, y, r);
+      ctx.closePath();
     }
   };
 
