@@ -59,6 +59,7 @@ export enum GameScreen {
 // ─── Part Types ───────────────────────────────────────────────────────────────
 
 export enum PartType {
+  // ── Starter parts ────────────────────────────────────────────────────────
   COMMAND_POD,
   FUEL_TANK_S,
   FUEL_TANK_L,
@@ -68,6 +69,17 @@ export enum PartType {
   FAIRING,
   HEAT_SHIELD,
   SRB,
+  // ── Advanced / lunar-capable parts ───────────────────────────────────────
+  /** High-efficiency vacuum engine — useless below 20 km, optimal above 70 km */
+  ENGINE_VAC_ADV,
+  /** Extra-large transfer tank — for orbital / lunar stages */
+  FUEL_TANK_XL,
+  /** Improved command pod — lighter, better heat resistance */
+  COMMAND_POD_ADV,
+  /** Heavy heat shield — survives high-speed lunar reentry */
+  HEAT_SHIELD_HEAVY,
+  /** Heavy-duty decoupler — clean separation of large stages */
+  DECOUPLER_HEAVY,
 }
 
 // ─── Part Definition (static catalogue) ──────────────────────────────────────
@@ -107,6 +119,16 @@ export interface PartDef {
   maxTemperature: number;
   /** Fraction of incoming heat flux blocked (0 = none, 0.95 = heat shield) */
   heatResistance: number;
+  /**
+   * If set, this engine uses altitude-based (not pressure-based) efficiency.
+   * Below 20 km: thrustSL fraction.
+   * 20 km → altitudeVacuum: linear ramp from thrustSL to 100 %.
+   * Above altitudeVacuum: full vacuum performance.
+   * Designed for vacuum engines with a hard atmospheric cutoff.
+   */
+  altitudeVacuum?: number;
+  /** Velocity impulse (m/s) applied to the upper stage on separation. */
+  separationForce?: number;
 }
 
 // ─── Staging ──────────────────────────────────────────────────────────────────

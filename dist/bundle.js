@@ -41,6 +41,12 @@
   };
 
   // src/Part.ts
+  function isEnginePart(type) {
+    return type === 3 /* ENGINE */ || type === 4 /* ENGINE_VACUUM */ || type === 9 /* ENGINE_VAC_ADV */ || type === 8 /* SRB */;
+  }
+  function isDecouplerPart(type) {
+    return type === 5 /* DECOUPLER */ || type === 13 /* DECOUPLER_HEAVY */;
+  }
   var PART_CATALOGUE = {
     [0 /* COMMAND_POD */]: {
       type: 0 /* COMMAND_POD */,
@@ -220,6 +226,136 @@
       description: "Pair of solid boosters mounted on the sides. 560 kN total, always full thrust.",
       maxTemperature: 1800,
       heatResistance: 0.5
+    },
+    // ── Advanced / lunar-capable parts ───────────────────────────────────────────
+    /**
+     * LV-1 Condor — high-expansion vacuum engine.
+     * Altitude-based efficiency: 20 % below 20 km, ramps to 100 % at 70 km.
+     * Ideal for circularisation, TLI burns, and plane changes; useless for launch.
+     */
+    [9 /* ENGINE_VAC_ADV */]: {
+      type: 9 /* ENGINE_VAC_ADV */,
+      name: "LV-1 Condor",
+      dryMass: 900,
+      maxFuelMass: 0,
+      maxThrust: 15e4,
+      // vacuum thrust, N
+      isp: 450,
+      // vacuum Isp, s — better than LV-909
+      ispSL: 25,
+      // terrible at sea level; large bell stalls
+      thrustSL: 0.2,
+      // 20 % thrust at sea level
+      altitudeVacuum: 7e4,
+      // reaches 100 % efficiency at 70 km (Kerman Line)
+      dragCoeff: 0.38,
+      crossSection: 2.4,
+      // very large expansion bell
+      renderW: 56,
+      renderH: 72,
+      color: "#1a3a6a",
+      description: "Space engine. 20 % efficient below 20 km, 100 % above 70 km. 150 kN / Isp 450 s vac.",
+      maxTemperature: 2200,
+      heatResistance: 0.6
+    },
+    /**
+     * FL-TX1200 Transfer Tank — extra-large propellant tank for orbital stages.
+     * Holds 12 t of propellant; designed for long burns without restaging.
+     */
+    [10 /* FUEL_TANK_XL */]: {
+      type: 10 /* FUEL_TANK_XL */,
+      name: "FL-TX1200 Tank",
+      dryMass: 1500,
+      maxFuelMass: 12e3,
+      // 12 t propellant — 1.5× FL-T800
+      maxThrust: 0,
+      isp: 0,
+      ispSL: 0,
+      thrustSL: 0,
+      dragCoeff: 0.15,
+      crossSection: 1.77,
+      renderW: 50,
+      renderH: 200,
+      // visibly taller than FL-T800
+      color: "#3a4a5a",
+      description: "Extra-large transfer tank (12 t propellant). For orbital and lunar stages.",
+      maxTemperature: 1400,
+      heatResistance: 0.15
+    },
+    /**
+     * Mk2 Advanced Pod — improved command module.
+     * Lighter than Mk1, higher heat resistance for steeper reentry.
+     */
+    [11 /* COMMAND_POD_ADV */]: {
+      type: 11 /* COMMAND_POD_ADV */,
+      name: "Mk2 Command Pod",
+      dryMass: 660,
+      // 180 kg lighter than Mk1
+      maxFuelMass: 0,
+      maxThrust: 0,
+      isp: 0,
+      ispSL: 0,
+      thrustSL: 0,
+      dragCoeff: 0.18,
+      crossSection: 1.54,
+      renderW: 48,
+      renderH: 56,
+      color: "#1a4a7a",
+      description: "Improved capsule. Lighter than Mk1, survives steeper reentry. SAS included.",
+      maxTemperature: 2400,
+      // vs Mk1 1800 K
+      heatResistance: 0.55
+      // vs Mk1 0.40
+    },
+    /**
+     * Mk2-XL Heat Shield — heavy ablative shield for high-speed reentry.
+     * Rated for lunar return velocities (~11 km/s).
+     */
+    [12 /* HEAT_SHIELD_HEAVY */]: {
+      type: 12 /* HEAT_SHIELD_HEAVY */,
+      name: "Mk2 Heavy Shield",
+      dryMass: 900,
+      maxFuelMass: 0,
+      maxThrust: 0,
+      isp: 0,
+      ispSL: 0,
+      thrustSL: 0,
+      dragCoeff: 0.55,
+      crossSection: 2.2,
+      // slightly wider — covers more of the base
+      renderW: 52,
+      renderH: 26,
+      color: "#0e0e0e",
+      description: "Reentry protection. Handles high-speed lunar reentry. Must face prograde during descent.",
+      maxTemperature: 4800,
+      // vs Mk1 3500 K
+      heatResistance: 0.98
+      // vs Mk1 0.95
+    },
+    /**
+     * TR-XL Heavy Decoupler — engineered for large upper stages.
+     * Higher mass tolerance; applies a small separation impulse on firing.
+     */
+    [13 /* DECOUPLER_HEAVY */]: {
+      type: 13 /* DECOUPLER_HEAVY */,
+      name: "TR-XL Decoupler",
+      dryMass: 600,
+      // heavier than TR-18A (400 kg) — for structural loads
+      maxFuelMass: 0,
+      maxThrust: 0,
+      isp: 0,
+      ispSL: 0,
+      thrustSL: 0,
+      separationForce: 3,
+      // 3 m/s separation kick applied on stage fire
+      dragCoeff: 0.1,
+      crossSection: 1.77,
+      renderW: 50,
+      renderH: 24,
+      color: "#aa6600",
+      description: "Heavy staging. Cleans up large stage separations with a 3 m/s kick.",
+      maxTemperature: 1800,
+      heatResistance: 0.35
     }
   };
   var _nextId = 1;
@@ -244,7 +380,7 @@
     }
     /** True if this part can produce thrust (engine + active + not destroyed) */
     get isThrusting() {
-      return (this.def.type === 3 /* ENGINE */ || this.def.type === 4 /* ENGINE_VACUUM */ || this.def.type === 8 /* SRB */) && this.isActive && !this.isDestroyed;
+      return isEnginePart(this.def.type) && this.isActive && !this.isDestroyed;
     }
     /** True if this part is a fuel tank that still has propellant and is intact */
     get hasFuel() {
@@ -270,6 +406,7 @@
     }
   };
   var VAB_PALETTE = [
+    // ── Starter ──────────────────────────────────────────────────────────────────
     0 /* COMMAND_POD */,
     6 /* FAIRING */,
     2 /* FUEL_TANK_L */,
@@ -278,7 +415,13 @@
     4 /* ENGINE_VACUUM */,
     8 /* SRB */,
     5 /* DECOUPLER */,
-    7 /* HEAT_SHIELD */
+    7 /* HEAT_SHIELD */,
+    // ── Advanced / lunar ─────────────────────────────────────────────────────────
+    11 /* COMMAND_POD_ADV */,
+    10 /* FUEL_TANK_XL */,
+    9 /* ENGINE_VAC_ADV */,
+    13 /* DECOUPLER_HEAVY */,
+    12 /* HEAT_SHIELD_HEAVY */
   ];
 
   // src/Physics.ts
@@ -346,8 +489,21 @@
       let massFlow = 0;
       for (const p of rocket.parts.filter((pp) => pp.isThrusting)) {
         const thr = p.def.ignoreThrottle ? 1 : rocket.throttle;
-        const effThrust = p.def.maxThrust * thr * (p.def.thrustSL + (1 - p.def.thrustSL) * vacFrac);
-        const effIsp = p.def.ispSL + (p.def.isp - p.def.ispSL) * vacFrac;
+        let localVacFrac;
+        if (p.def.altitudeVacuum !== void 0) {
+          const BREAK_ALT = 2e4;
+          if (altitude <= BREAK_ALT) {
+            localVacFrac = 0;
+          } else if (altitude >= p.def.altitudeVacuum) {
+            localVacFrac = 1;
+          } else {
+            localVacFrac = (altitude - BREAK_ALT) / (p.def.altitudeVacuum - BREAK_ALT);
+          }
+        } else {
+          localVacFrac = vacFrac;
+        }
+        const effThrust = p.def.maxThrust * thr * (p.def.thrustSL + (1 - p.def.thrustSL) * localVacFrac);
+        const effIsp = p.def.ispSL + (p.def.isp - p.def.ispSL) * localVacFrac;
         thrustMag += effThrust;
         if (effIsp > 0)
           massFlow += effThrust / (effIsp * G0);
@@ -561,6 +717,11 @@
       this.hasLaunched = false;
       /** Whether rocket has been destroyed (crashed / overheated) */
       this.isDestroyed = false;
+      /**
+       * Velocity impulse (m/s) queued by the last decoupler separation.
+       * Game.ts applies this to body.vel along the nose direction after staging.
+       */
+      this.pendingSeparationDV = 0;
       /** Current throttle 0–1, set by Game.ts each frame before physics.step */
       this.throttle = 0;
     }
@@ -632,9 +793,9 @@
         part.stageIndex = -1;
       let stageIdx = 0;
       for (const part of this.parts) {
-        if (part.def.type === 3 /* ENGINE */ || part.def.type === 4 /* ENGINE_VACUUM */ || part.def.type === 8 /* SRB */) {
+        if (isEnginePart(part.def.type)) {
           part.stageIndex = stageIdx;
-        } else if (part.def.type === 5 /* DECOUPLER */) {
+        } else if (isDecouplerPart(part.def.type)) {
           stageIdx++;
           part.stageIndex = stageIdx;
         }
@@ -673,15 +834,17 @@
         return false;
       this.currentStage = nextStage;
       const toSeparate = [];
+      this.pendingSeparationDV = 0;
       for (const partId of stage.partIds) {
         const part = this.parts.find((p) => p.id === partId);
         if (!part)
           continue;
-        if (part.def.type === 3 /* ENGINE */ || part.def.type === 4 /* ENGINE_VACUUM */ || part.def.type === 8 /* SRB */) {
+        if (isEnginePart(part.def.type)) {
           part.isActive = true;
-        } else if (part.def.type === 5 /* DECOUPLER */) {
+        } else if (isDecouplerPart(part.def.type)) {
           part.isActive = true;
           toSeparate.push(partId);
+          this.pendingSeparationDV += part.def.separationForce ?? 0;
         }
       }
       this._separateAt(toSeparate);
@@ -692,9 +855,8 @@
      */
     cutEngines() {
       for (const part of this.parts) {
-        if (part.def.type === 3 /* ENGINE */ || part.def.type === 4 /* ENGINE_VACUUM */ || part.def.type === 8 /* SRB */) {
+        if (isEnginePart(part.def.type))
           part.isActive = false;
-        }
       }
     }
     // ─── Aggregate Physics Properties ───────────────────────────────────────────
@@ -781,7 +943,7 @@
     }
     /** True if any critical structural part (pod or tank) has been heat-destroyed */
     get hasDestroyedCriticalPart() {
-      return this.parts.some((p) => p.isDestroyed && (p.def.type === 0 /* COMMAND_POD */ || p.def.type === 1 /* FUEL_TANK_S */ || p.def.type === 2 /* FUEL_TANK_L */));
+      return this.parts.some((p) => p.isDestroyed && (p.def.type === 0 /* COMMAND_POD */ || p.def.type === 11 /* COMMAND_POD_ADV */ || p.def.type === 1 /* FUEL_TANK_S */ || p.def.type === 2 /* FUEL_TANK_L */ || p.def.type === 10 /* FUEL_TANK_XL */));
     }
     // ─── Launch Initialisation ──────────────────────────────────────────────────
     /**
@@ -799,7 +961,7 @@
       this.isDestroyed = false;
       this.currentStage = -1;
       for (const part of this.parts) {
-        if (part.def.type === 3 /* ENGINE */ || part.def.type === 4 /* ENGINE_VACUUM */ || part.def.type === 8 /* SRB */) {
+        if (isEnginePart(part.def.type)) {
           part.isActive = false;
         }
         part.currentTemperature = 293;
@@ -833,9 +995,7 @@
      * Summed across all remaining stages.
      */
     getDeltaV() {
-      const engines = this.parts.filter(
-        (p) => p.def.type === 3 /* ENGINE */ || p.def.type === 4 /* ENGINE_VACUUM */ || p.def.type === 8 /* SRB */
-      );
+      const engines = this.parts.filter((p) => isEnginePart(p.def.type));
       if (engines.length === 0)
         return 0;
       const isp = this.getEffectiveIsp();
@@ -1431,6 +1591,105 @@
           ctx.fill();
           break;
         }
+        case 9 /* ENGINE_VAC_ADV */: {
+          const bellW = w * 1.85;
+          ctx.beginPath();
+          ctx.moveTo(x + w * 0.32, y + h * 0.5);
+          ctx.lineTo(x + w * 0.68, y + h * 0.5);
+          ctx.bezierCurveTo(
+            x + w * 0.72,
+            y + h * 0.72,
+            x + (w + bellW) / 2,
+            y + h * 0.9,
+            x + (w + bellW) / 2,
+            y + h
+          );
+          ctx.lineTo(x + (w - bellW) / 2, y + h);
+          ctx.bezierCurveTo(
+            x + (w - bellW) / 2,
+            y + h * 0.9,
+            x + w * 0.28,
+            y + h * 0.72,
+            x + w * 0.32,
+            y + h * 0.5
+          );
+          ctx.fillStyle = "#1a3a6a";
+          ctx.fill();
+          ctx.strokeStyle = "rgba(80,140,255,0.5)";
+          ctx.lineWidth = 1.5 * scale;
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.ellipse(x + w * 0.5, y + h * 0.38, w * 0.16, h * 0.1, 0, 0, Math.PI * 2);
+          ctx.fillStyle = "#4a8acc";
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(x + w * 0.5, y + h * 0.38, w * 0.24, 0, Math.PI * 2);
+          ctx.strokeStyle = "rgba(80,160,255,0.35)";
+          ctx.lineWidth = 1 * scale;
+          ctx.stroke();
+          break;
+        }
+        case 10 /* FUEL_TANK_XL */: {
+          const frac = part.def.maxFuelMass > 0 ? part.fuelRemaining / part.def.maxFuelMass : 0;
+          const barH = (h - 10 * scale) * frac;
+          ctx.fillStyle = frac > 0.3 ? "rgba(0,200,100,0.35)" : "rgba(255,80,0,0.45)";
+          ctx.fillRect(x + w * 0.2, y + (h - 5 * scale) - barH, w * 0.6, barH);
+          ctx.strokeStyle = "rgba(150,180,200,0.25)";
+          ctx.lineWidth = 1 * scale;
+          for (let i = 1; i <= 3; i++) {
+            const ty = y + h * (i / 4);
+            ctx.beginPath();
+            ctx.moveTo(x + 2 * scale, ty);
+            ctx.lineTo(x + w - 2 * scale, ty);
+            ctx.stroke();
+          }
+          break;
+        }
+        case 11 /* COMMAND_POD_ADV */: {
+          ctx.beginPath();
+          ctx.ellipse(x + w * 0.5, y + h * 0.38, w * 0.28, h * 0.2, 0, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(120,200,255,0.65)";
+          ctx.fill();
+          ctx.strokeStyle = "rgba(0,212,255,0.6)";
+          ctx.lineWidth = 1 * scale;
+          ctx.stroke();
+          ctx.fillStyle = "#2a6a9a";
+          ctx.fillRect(x - 3 * scale, y + h * 0.6, 5 * scale, 3 * scale);
+          ctx.fillRect(x + w - 2 * scale, y + h * 0.6, 5 * scale, 3 * scale);
+          ctx.fillStyle = "#88aacc";
+          ctx.fillRect(x + w * 0.44, y, w * 0.12, 4 * scale);
+          break;
+        }
+        case 12 /* HEAT_SHIELD_HEAVY */: {
+          ctx.fillStyle = "rgba(200,60,0,0.18)";
+          ctx.fillRect(x, y, w, h);
+          ctx.fillStyle = "#0a0a0a";
+          ctx.fillRect(x + 2 * scale, y + 2 * scale, w - 4 * scale, h * 0.45);
+          ctx.strokeStyle = "rgba(200,100,0,0.3)";
+          ctx.lineWidth = 1 * scale;
+          for (let i = 0; i < 3; i++) {
+            const oy = y + h * (0.12 + i * 0.22);
+            ctx.beginPath();
+            ctx.moveTo(x + 2 * scale, oy + 5 * scale);
+            ctx.lineTo(x + w / 2, oy);
+            ctx.lineTo(x + w - 2 * scale, oy + 5 * scale);
+            ctx.stroke();
+          }
+          break;
+        }
+        case 13 /* DECOUPLER_HEAVY */: {
+          ctx.fillStyle = "#cc7700";
+          ctx.fillRect(x, y + h * 0.25, w, h * 0.5);
+          ctx.fillStyle = "#ffcc66";
+          const boltCount = 5;
+          for (let i = 0; i < boltCount; i++) {
+            const bx = x + w * ((i + 0.5) / boltCount);
+            ctx.beginPath();
+            ctx.arc(bx, y + h * 0.5, 2 * scale, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          break;
+        }
       }
     }
     // ─── Exhaust Plume ────────────────────────────────────────────────────────
@@ -1856,7 +2115,7 @@
           ctx.font = "9px Courier New";
           ctx.textAlign = "center";
           ctx.fillText(part.def.name.slice(0, 14), cx, y + h * 0.55);
-          if (showStageBadges && (part.def.type === 3 /* ENGINE */ || part.def.type === 4 /* ENGINE_VACUUM */ || part.def.type === 5 /* DECOUPLER */)) {
+          if (showStageBadges && (isEnginePart(part.def.type) || isDecouplerPart(part.def.type))) {
             const si = part.stageIndex;
             const bCol = si >= 0 && si < _Renderer.STAGE_COLORS.length ? _Renderer.STAGE_COLORS[si] : "#444";
             const bLbl = si >= 0 ? `S${si}` : "\u2013";
@@ -3816,6 +4075,13 @@
       if (this.stagePressed) {
         this.stagePressed = false;
         this.rocket.activateNextStage();
+        if (this.rocket.pendingSeparationDV > 0) {
+          const noseX = Math.sin(this.rocket.body.angle);
+          const noseY = Math.cos(this.rocket.body.angle);
+          this.rocket.body.vel.x += noseX * this.rocket.pendingSeparationDV;
+          this.rocket.body.vel.y += noseY * this.rocket.pendingSeparationDV;
+          this.rocket.pendingSeparationDV = 0;
+        }
       }
       if (this.mapPressed) {
         this.mapPressed = false;
@@ -4090,3 +4356,4 @@
   requestAnimationFrame(loop);
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 })();
+//# sourceMappingURL=bundle.js.map

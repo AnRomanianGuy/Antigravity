@@ -162,10 +162,28 @@ export class PhysicsEngine {
     let thrustMag = 0;
     let massFlow  = 0;
     for (const p of rocket.parts.filter(pp => pp.isThrusting)) {
-      const thr       = p.def.ignoreThrottle ? 1 : rocket.throttle;
+      const thr = p.def.ignoreThrottle ? 1 : rocket.throttle;
+
+      // Vacuum fraction: pressure-based for normal engines, altitude-based for
+      // advanced vacuum engines that have a hard atmospheric cutoff.
+      let localVacFrac: number;
+      if (p.def.altitudeVacuum !== undefined) {
+        // Flat at thrustSL below 20 km; linear ramp 20 km → altitudeVacuum.
+        const BREAK_ALT = 20_000;
+        if (altitude <= BREAK_ALT) {
+          localVacFrac = 0;
+        } else if (altitude >= p.def.altitudeVacuum) {
+          localVacFrac = 1;
+        } else {
+          localVacFrac = (altitude - BREAK_ALT) / (p.def.altitudeVacuum - BREAK_ALT);
+        }
+      } else {
+        localVacFrac = vacFrac;   // standard pressure-based interpolation
+      }
+
       const effThrust = p.def.maxThrust * thr
-        * (p.def.thrustSL + (1 - p.def.thrustSL) * vacFrac);
-      const effIsp    = p.def.ispSL + (p.def.isp - p.def.ispSL) * vacFrac;
+        * (p.def.thrustSL + (1 - p.def.thrustSL) * localVacFrac);
+      const effIsp    = p.def.ispSL + (p.def.isp - p.def.ispSL) * localVacFrac;
       thrustMag += effThrust;
       if (effIsp > 0) massFlow += effThrust / (effIsp * G0);
     }

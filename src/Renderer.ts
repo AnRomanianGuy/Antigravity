@@ -566,6 +566,111 @@ export class Renderer {
         ctx.fill();
         break;
       }
+      case PartType.ENGINE_VAC_ADV: {
+        // Extravagant expansion bell — wider than ENGINE_VACUUM, dark blue
+        const bellW = w * 1.85;
+        ctx.beginPath();
+        ctx.moveTo(x + w * 0.32, y + h * 0.5);
+        ctx.lineTo(x + w * 0.68, y + h * 0.5);
+        ctx.bezierCurveTo(
+          x + w * 0.72, y + h * 0.72,
+          x + (w + bellW) / 2, y + h * 0.90,
+          x + (w + bellW) / 2, y + h,
+        );
+        ctx.lineTo(x + (w - bellW) / 2, y + h);
+        ctx.bezierCurveTo(
+          x + (w - bellW) / 2, y + h * 0.90,
+          x + w * 0.28, y + h * 0.72,
+          x + w * 0.32, y + h * 0.5,
+        );
+        ctx.fillStyle = '#1a3a6a';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(80,140,255,0.5)';
+        ctx.lineWidth = 1.5 * scale;
+        ctx.stroke();
+        // Injector core
+        ctx.beginPath();
+        ctx.ellipse(x + w * 0.5, y + h * 0.38, w * 0.16, h * 0.10, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#4a8acc';
+        ctx.fill();
+        // Blue accent ring
+        ctx.beginPath();
+        ctx.arc(x + w * 0.5, y + h * 0.38, w * 0.24, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(80,160,255,0.35)';
+        ctx.lineWidth = 1 * scale;
+        ctx.stroke();
+        break;
+      }
+      case PartType.FUEL_TANK_XL: {
+        // Fuel level bar (same style as S/L but with tick marks)
+        const frac = part.def.maxFuelMass > 0 ? part.fuelRemaining / part.def.maxFuelMass : 0;
+        const barH = (h - 10 * scale) * frac;
+        ctx.fillStyle = frac > 0.3 ? 'rgba(0,200,100,0.35)' : 'rgba(255,80,0,0.45)';
+        ctx.fillRect(x + w * 0.2, y + (h - 5 * scale) - barH, w * 0.6, barH);
+        // Horizontal weld lines (structural detail)
+        ctx.strokeStyle = 'rgba(150,180,200,0.25)';
+        ctx.lineWidth = 1 * scale;
+        for (let i = 1; i <= 3; i++) {
+          const ty = y + h * (i / 4);
+          ctx.beginPath();
+          ctx.moveTo(x + 2 * scale, ty);
+          ctx.lineTo(x + w - 2 * scale, ty);
+          ctx.stroke();
+        }
+        break;
+      }
+      case PartType.COMMAND_POD_ADV: {
+        // Larger visor window + side thrusters
+        ctx.beginPath();
+        ctx.ellipse(x + w * 0.5, y + h * 0.38, w * 0.28, h * 0.20, 0, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(120,200,255,0.65)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(0,212,255,0.6)';
+        ctx.lineWidth = 1 * scale;
+        ctx.stroke();
+        // Side RCS nubs
+        ctx.fillStyle = '#2a6a9a';
+        ctx.fillRect(x - 3 * scale, y + h * 0.6, 5 * scale, 3 * scale);
+        ctx.fillRect(x + w - 2 * scale, y + h * 0.6, 5 * scale, 3 * scale);
+        // Antenna nub
+        ctx.fillStyle = '#88aacc';
+        ctx.fillRect(x + w * 0.44, y, w * 0.12, 4 * scale);
+        break;
+      }
+      case PartType.HEAT_SHIELD_HEAVY: {
+        // Thick ablative surface — dark with orange heat-soak tinting
+        ctx.fillStyle = 'rgba(200,60,0,0.18)';
+        ctx.fillRect(x, y, w, h);
+        ctx.fillStyle = '#0a0a0a';
+        ctx.fillRect(x + 2 * scale, y + 2 * scale, w - 4 * scale, h * 0.45);
+        // Chevron pattern on surface
+        ctx.strokeStyle = 'rgba(200,100,0,0.3)';
+        ctx.lineWidth = 1 * scale;
+        for (let i = 0; i < 3; i++) {
+          const oy = y + h * (0.12 + i * 0.22);
+          ctx.beginPath();
+          ctx.moveTo(x + 2 * scale, oy + 5 * scale);
+          ctx.lineTo(x + w / 2, oy);
+          ctx.lineTo(x + w - 2 * scale, oy + 5 * scale);
+          ctx.stroke();
+        }
+        break;
+      }
+      case PartType.DECOUPLER_HEAVY: {
+        // Thick orange-amber separation band with bolts
+        ctx.fillStyle = '#cc7700';
+        ctx.fillRect(x, y + h * 0.25, w, h * 0.5);
+        // Bolt dots
+        ctx.fillStyle = '#ffcc66';
+        const boltCount = 5;
+        for (let i = 0; i < boltCount; i++) {
+          const bx = x + w * ((i + 0.5) / boltCount);
+          ctx.beginPath();
+          ctx.arc(bx, y + h * 0.5, 2 * scale, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        break;
+      }
     }
   }
 
@@ -1062,11 +1167,7 @@ export class Renderer {
         ctx.textAlign = 'center';
         ctx.fillText(part.def.name.slice(0, 14), cx, y + h * 0.55);
 
-        if (showStageBadges && (
-          part.def.type === PartType.ENGINE ||
-          part.def.type === PartType.ENGINE_VACUUM ||
-          part.def.type === PartType.DECOUPLER
-        )) {
+        if (showStageBadges && (isEnginePart(part.def.type) || isDecouplerPart(part.def.type))) {
           const si  = part.stageIndex;
           const bCol = si >= 0 && si < Renderer.STAGE_COLORS.length ? Renderer.STAGE_COLORS[si] : '#444';
           const bLbl = si >= 0 ? `S${si}` : '–';
@@ -1525,4 +1626,4 @@ export class Renderer {
 }
 
 // Import needed after class definition to avoid circular dependency issues
-import { PartInstance, PART_CATALOGUE } from './Part';
+import { PartInstance, PART_CATALOGUE, isEnginePart, isDecouplerPart } from './Part';

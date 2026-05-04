@@ -250,6 +250,13 @@ export class Game {
     if (this.stagePressed) {
       this.stagePressed = false;
       this.rocket.activateNextStage();
+      if (this.rocket.pendingSeparationDV > 0) {
+        const noseX = Math.sin(this.rocket.body.angle);
+        const noseY = Math.cos(this.rocket.body.angle);
+        this.rocket.body.vel.x += noseX * this.rocket.pendingSeparationDV;
+        this.rocket.body.vel.y += noseY * this.rocket.pendingSeparationDV;
+        this.rocket.pendingSeparationDV = 0;
+      }
     }
 
     if (this.mapPressed) {

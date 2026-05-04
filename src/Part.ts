@@ -8,6 +8,22 @@
 
 import { PartDef, PartType } from './types';
 
+// ─── Part-type helpers ────────────────────────────────────────────────────────
+
+/** True for any part that can produce thrust (engine or SRB). */
+export function isEnginePart(type: PartType): boolean {
+  return type === PartType.ENGINE
+      || type === PartType.ENGINE_VACUUM
+      || type === PartType.ENGINE_VAC_ADV
+      || type === PartType.SRB;
+}
+
+/** True for any decoupler type. */
+export function isDecouplerPart(type: PartType): boolean {
+  return type === PartType.DECOUPLER
+      || type === PartType.DECOUPLER_HEAVY;
+}
+
 // ─── Static Part Catalogue ────────────────────────────────────────────────────
 
 /**
@@ -170,6 +186,114 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
     maxTemperature: 1800,
     heatResistance: 0.50,
   },
+
+  // ── Advanced / lunar-capable parts ───────────────────────────────────────────
+
+  /**
+   * LV-1 Condor — high-expansion vacuum engine.
+   * Altitude-based efficiency: 20 % below 20 km, ramps to 100 % at 70 km.
+   * Ideal for circularisation, TLI burns, and plane changes; useless for launch.
+   */
+  [PartType.ENGINE_VAC_ADV]: {
+    type: PartType.ENGINE_VAC_ADV,
+    name: 'LV-1 Condor',
+    dryMass: 900,
+    maxFuelMass: 0,
+    maxThrust: 150_000,   // vacuum thrust, N
+    isp: 450,             // vacuum Isp, s — better than LV-909
+    ispSL: 25,            // terrible at sea level; large bell stalls
+    thrustSL: 0.20,       // 20 % thrust at sea level
+    altitudeVacuum: 70_000, // reaches 100 % efficiency at 70 km (Kerman Line)
+    dragCoeff: 0.38,
+    crossSection: 2.40,   // very large expansion bell
+    renderW: 56,
+    renderH: 72,
+    color: '#1a3a6a',
+    description: 'Space engine. 20 % efficient below 20 km, 100 % above 70 km. 150 kN / Isp 450 s vac.',
+    maxTemperature: 2200,
+    heatResistance: 0.60,
+  },
+
+  /**
+   * FL-TX1200 Transfer Tank — extra-large propellant tank for orbital stages.
+   * Holds 12 t of propellant; designed for long burns without restaging.
+   */
+  [PartType.FUEL_TANK_XL]: {
+    type: PartType.FUEL_TANK_XL,
+    name: 'FL-TX1200 Tank',
+    dryMass: 1500,
+    maxFuelMass: 12_000,  // 12 t propellant — 1.5× FL-T800
+    maxThrust: 0,   isp: 0,    ispSL: 0,   thrustSL: 0,
+    dragCoeff: 0.15,
+    crossSection: 1.77,
+    renderW: 50,
+    renderH: 200,         // visibly taller than FL-T800
+    color: '#3a4a5a',
+    description: 'Extra-large transfer tank (12 t propellant). For orbital and lunar stages.',
+    maxTemperature: 1400,
+    heatResistance: 0.15,
+  },
+
+  /**
+   * Mk2 Advanced Pod — improved command module.
+   * Lighter than Mk1, higher heat resistance for steeper reentry.
+   */
+  [PartType.COMMAND_POD_ADV]: {
+    type: PartType.COMMAND_POD_ADV,
+    name: 'Mk2 Command Pod',
+    dryMass: 660,         // 180 kg lighter than Mk1
+    maxFuelMass: 0,
+    maxThrust: 0,   isp: 0,    ispSL: 0,   thrustSL: 0,
+    dragCoeff: 0.18,
+    crossSection: 1.54,
+    renderW: 48,
+    renderH: 56,
+    color: '#1a4a7a',
+    description: 'Improved capsule. Lighter than Mk1, survives steeper reentry. SAS included.',
+    maxTemperature: 2400,   // vs Mk1 1800 K
+    heatResistance: 0.55,   // vs Mk1 0.40
+  },
+
+  /**
+   * Mk2-XL Heat Shield — heavy ablative shield for high-speed reentry.
+   * Rated for lunar return velocities (~11 km/s).
+   */
+  [PartType.HEAT_SHIELD_HEAVY]: {
+    type: PartType.HEAT_SHIELD_HEAVY,
+    name: 'Mk2 Heavy Shield',
+    dryMass: 900,
+    maxFuelMass: 0,
+    maxThrust: 0,   isp: 0,    ispSL: 0,   thrustSL: 0,
+    dragCoeff: 0.55,
+    crossSection: 2.20,   // slightly wider — covers more of the base
+    renderW: 52,
+    renderH: 26,
+    color: '#0e0e0e',
+    description: 'Reentry protection. Handles high-speed lunar reentry. Must face prograde during descent.',
+    maxTemperature: 4800,   // vs Mk1 3500 K
+    heatResistance: 0.98,   // vs Mk1 0.95
+  },
+
+  /**
+   * TR-XL Heavy Decoupler — engineered for large upper stages.
+   * Higher mass tolerance; applies a small separation impulse on firing.
+   */
+  [PartType.DECOUPLER_HEAVY]: {
+    type: PartType.DECOUPLER_HEAVY,
+    name: 'TR-XL Decoupler',
+    dryMass: 600,           // heavier than TR-18A (400 kg) — for structural loads
+    maxFuelMass: 0,
+    maxThrust: 0,   isp: 0,    ispSL: 0,   thrustSL: 0,
+    separationForce: 3,     // 3 m/s separation kick applied on stage fire
+    dragCoeff: 0.10,
+    crossSection: 1.77,
+    renderW: 50,
+    renderH: 24,
+    color: '#aa6600',
+    description: 'Heavy staging. Cleans up large stage separations with a 3 m/s kick.',
+    maxTemperature: 1800,
+    heatResistance: 0.35,
+  },
 };
 
 // ─── Part Instance ────────────────────────────────────────────────────────────
@@ -233,8 +357,7 @@ export class PartInstance {
 
   /** True if this part can produce thrust (engine + active + not destroyed) */
   get isThrusting(): boolean {
-    return (this.def.type === PartType.ENGINE || this.def.type === PartType.ENGINE_VACUUM || this.def.type === PartType.SRB)
-      && this.isActive && !this.isDestroyed;
+    return isEnginePart(this.def.type) && this.isActive && !this.isDestroyed;
   }
 
   /** True if this part is a fuel tank that still has propellant and is intact */
@@ -266,8 +389,9 @@ export class PartInstance {
 
 // ─── Part palette order for VAB UI ───────────────────────────────────────────
 
-/** Ordered list of part types shown in the VAB parts panel */
+/** Ordered list of part types shown in the VAB parts panel (starter then advanced) */
 export const VAB_PALETTE: PartType[] = [
+  // ── Starter ──────────────────────────────────────────────────────────────────
   PartType.COMMAND_POD,
   PartType.FAIRING,
   PartType.FUEL_TANK_L,
@@ -277,4 +401,10 @@ export const VAB_PALETTE: PartType[] = [
   PartType.SRB,
   PartType.DECOUPLER,
   PartType.HEAT_SHIELD,
+  // ── Advanced / lunar ─────────────────────────────────────────────────────────
+  PartType.COMMAND_POD_ADV,
+  PartType.FUEL_TANK_XL,
+  PartType.ENGINE_VAC_ADV,
+  PartType.DECOUPLER_HEAVY,
+  PartType.HEAT_SHIELD_HEAVY,
 ];

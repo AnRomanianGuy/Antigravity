@@ -13,7 +13,7 @@
  */
 
 import { RigidBody, StageData, PartType, vec2 } from './types';
-import { PartInstance } from './Part';
+import { PartInstance, isEnginePart, isDecouplerPart } from './Part';
 import { R_EARTH, G0 } from './Physics';
 
 // ─── Launch Site ──────────────────────────────────────────────────────────────
@@ -50,6 +50,12 @@ export class Rocket {
 
   /** Whether rocket has been destroyed (crashed / overheated) */
   isDestroyed = false;
+
+  /**
+   * Velocity impulse (m/s) queued by the last decoupler separation.
+   * Game.ts applies this to body.vel along the nose direction after staging.
+   */
+  pendingSeparationDV = 0;
 
   /** Current throttle 0–1, set by Game.ts each frame before physics.step */
   throttle = 0;
@@ -137,11 +143,9 @@ export class Rocket {
     let stageIdx = 0;
 
     for (const part of this.parts) {
-      if (part.def.type === PartType.ENGINE ||
-          part.def.type === PartType.ENGINE_VACUUM ||
-          part.def.type === PartType.SRB) {
+      if (isEnginePart(part.def.type)) {
         part.stageIndex = stageIdx;
-      } else if (part.def.type === PartType.DECOUPLER) {
+      } else if (isDecouplerPart(part.def.type)) {
         stageIdx++;                  // advance — decoupler fires with the next engine group
         part.stageIndex = stageIdx;
       }
@@ -184,16 +188,18 @@ export class Rocket {
     this.currentStage = nextStage;
 
     const toSeparate: string[] = [];
+    this.pendingSeparationDV = 0;
 
     for (const partId of stage.partIds) {
       const part = this.parts.find(p => p.id === partId);
       if (!part) continue;
 
-      if (part.def.type === PartType.ENGINE || part.def.type === PartType.ENGINE_VACUUM || part.def.type === PartType.SRB) {
+      if (isEnginePart(part.def.type)) {
         part.isActive = true;
-      } else if (part.def.type === PartType.DECOUPLER) {
+      } else if (isDecouplerPart(part.def.type)) {
         part.isActive = true;   // mark as blown
         toSeparate.push(partId);
+        this.pendingSeparationDV += part.def.separationForce ?? 0;
       }
     }
 
@@ -208,9 +214,7 @@ export class Rocket {
    */
   cutEngines(): void {
     for (const part of this.parts) {
-      if (part.def.type === PartType.ENGINE || part.def.type === PartType.ENGINE_VACUUM || part.def.type === PartType.SRB) {
-        part.isActive = false;
-      }
+      if (isEnginePart(part.def.type)) part.isActive = false;
     }
   }
 
@@ -317,9 +321,11 @@ export class Rocket {
   /** True if any critical structural part (pod or tank) has been heat-destroyed */
   get hasDestroyedCriticalPart(): boolean {
     return this.parts.some(p => p.isDestroyed && (
-      p.def.type === PartType.COMMAND_POD ||
-      p.def.type === PartType.FUEL_TANK_S  ||
-      p.def.type === PartType.FUEL_TANK_L
+      p.def.type === PartType.COMMAND_POD     ||
+      p.def.type === PartType.COMMAND_POD_ADV ||
+      p.def.type === PartType.FUEL_TANK_S     ||
+      p.def.type === PartType.FUEL_TANK_L     ||
+      p.def.type === PartType.FUEL_TANK_XL
     ));
   }
 
@@ -344,7 +350,7 @@ export class Rocket {
 
     // Reset all part thermal state and deactivate engines
     for (const part of this.parts) {
-      if (part.def.type === PartType.ENGINE || part.def.type === PartType.ENGINE_VACUUM || part.def.type === PartType.SRB) {
+      if (isEnginePart(part.def.type)) {
         part.isActive = false;
       }
       part.currentTemperature = 293;
@@ -382,9 +388,7 @@ export class Rocket {
    * Summed across all remaining stages.
    */
   getDeltaV(): number {
-    const engines = this.parts.filter(
-      p => p.def.type === PartType.ENGINE || p.def.type === PartType.ENGINE_VACUUM || p.def.type === PartType.SRB,
-    );
+    const engines = this.parts.filter(p => isEnginePart(p.def.type));
     if (engines.length === 0) return 0;
 
     const isp   = this.getEffectiveIsp();
