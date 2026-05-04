@@ -1,28 +1,21 @@
 /**
  * MapView.ts — Orbital map overlay.
  *
- * Renders a zoomed-out view of the rocket's current position and
- * predicted trajectory around Earth.
+ * Trajectory prediction uses patched conics:
+ *   • Outside Moon SOI → Earth gravity only
+ *   • Inside Moon SOI  → Moon gravity only
  *
- * Trajectory prediction:
- *   Numerically integrates the rocket forward 300 × 20 s (≈ 100 min) using
- *   a gravity-only propagator. Each point stores pos + vel so we can compute
- *   the post-maneuver trajectory.
- *
- * Maneuver nodes:
- *   Click the predicted trajectory to place a node.
- *   Drag the prograde / retrograde / radial / anti-radial handles to change ΔV.
- *   The post-node trajectory redraws immediately.
- *   Click the node marker again to delete it.
- *
- * Coordinate system: same world-space as Physics.ts.
- *   Earth centre = (0, 0).  +Y = up (north pole direction).
- *   Scale = adaptive: Earth fills ~1/3 of the screen height.
+ * The Moon orbits Earth continuously; its position is sampled at each
+ * integration step so encounter timing is accurate.
  */
 
 import { Vec2, vec2, THEME, ManeuverNode } from './types';
 import { Rocket } from './Rocket';
-import { R_EARTH, MU_EARTH } from './Physics';
+import {
+  R_EARTH, MU_EARTH,
+  R_MOON, MU_MOON, MOON_ORBIT_RADIUS, MOON_SOI,
+  getMoonPosition, getMoonVelocity,
+} from './Physics';
 import { Atmosphere } from './Atmosphere';
 
 // ─── Orbital Elements helper ──────────────────────────────────────────────────
@@ -35,90 +28,96 @@ interface OrbitalState {
   period:  number;
 }
 
-function computeOrbitalElements(pos: Vec2, vel: Vec2): OrbitalState {
+function computeOrbitalElements(
+  pos: Vec2, vel: Vec2,
+  mu = MU_EARTH,
+  bodyR = R_EARTH,
+): OrbitalState {
   const r = vec2.length(pos);
   const v = vec2.length(vel);
-  const energy = (v * v) / 2 - MU_EARTH / r;
-
+  const energy = (v * v) / 2 - mu / r;
   if (energy >= 0) {
     return { sma: Infinity, ecc: 1, periAlt: -1, apoAlt: Infinity, period: Infinity };
   }
-
-  const sma  = -MU_EARTH / (2 * energy);
+  const sma  = -mu / (2 * energy);
   const h    = pos.x * vel.y - pos.y * vel.x;
-  const ecc2 = 1 - (h * h) / (MU_EARTH * sma);
+  const ecc2 = 1 - (h * h) / (mu * sma);
   const ecc  = Math.sqrt(Math.max(0, ecc2));
-  const periR   = sma * (1 - ecc);
-  const apoR    = sma * (1 + ecc);
-  const period  = 2 * Math.PI * Math.sqrt((sma ** 3) / MU_EARTH);
-
-  return { sma, ecc, periAlt: periR - R_EARTH, apoAlt: apoR - R_EARTH, period };
+  const periR  = sma * (1 - ecc);
+  const apoR   = sma * (1 + ecc);
+  const period = 2 * Math.PI * Math.sqrt((sma ** 3) / mu);
+  return { sma, ecc, periAlt: periR - bodyR, apoAlt: apoR - bodyR, period };
 }
 
-// ─── Trajectory point (pos + vel at each integration step) ───────────────────
+// ─── Trajectory point ────────────────────────────────────────────────────────
 
 interface TrajPoint {
   pos: Vec2;
   vel: Vec2;
-  /** Absolute mission time at this sample (s) */
-  t: number;
+  t:   number;
+  /** True if this point is inside the Moon's sphere of influence */
+  inMoonSOI: boolean;
+}
+
+// ─── Moon encounter record ────────────────────────────────────────────────────
+
+interface MoonEncounter {
+  /** Index into path[] where the trajectory first enters Moon SOI */
+  entryIdx:  number;
+  entryT:    number;
+  /** Index of closest approach to Moon surface */
+  closestIdx:              number;
+  /** Distance from Moon surface at closest approach (m); negative = impact */
+  closestDistFromSurface:  number;
+  isImpact:   boolean;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** Screen-space distance from node centre to handle midpoint (px) */
-const HANDLE_R = 38;
-
-/** m/s per pixel when dragging a handle */
+const HANDLE_R  = 38;
 const DV_PER_PX = 10;
-
-/** Visual pixels per (m/s) of dV magnitude on the arm (so 100 m/s ≈ 10px extension) */
 const DV_VIS_PX = 0.10;
 
 // ─── MapView Class ────────────────────────────────────────────────────────────
 
 export class MapView {
   private ctx: CanvasRenderingContext2D;
-  private W: number;
-  private H: number;
+  private W:   number;
+  private H:   number;
   private atmo: Atmosphere;
 
-  /** Base screen pixels per metre (Earth radius fills H * 0.20) */
-  private mpp = 1;
+  private mpp       = 1;
   private userScale = 1.0;
-  private panX = 0;
-  private panY = 0;
+  private panX      = 0;
+  private panY      = 0;
 
-  // ── Pan drag state ────────────────────────────────────────────────────────
   private isDragging = false;
   private dragStartX = 0;
   private dragStartY = 0;
-  /** True if the mouse moved enough during mousedown → suppress next click */
-  private _didPan = false;
+  private _didPan    = false;
 
   // ── Maneuver node ─────────────────────────────────────────────────────────
-  /** Single active maneuver node (null = none placed) */
   node: ManeuverNode | null = null;
-
-  /** Index into cachedPath[] where the node sits */
-  private _nodeIdx = 0;
+  private _nodeIdx  = 0;
 
   // ── Trajectory cache ──────────────────────────────────────────────────────
-  private cachedPath: TrajPoint[] = [];
+  private cachedPath:    TrajPoint[] = [];
+  private postNodePath:  TrajPoint[] = [];
   private pathAge = 0;
-  private postNodePath: TrajPoint[] = [];
 
-  // ── Screen-space hit-test targets (updated each render) ───────────────────
-  private _nodeScreenPt:    Vec2 | null = null;
-  private _progHandle:      Vec2 | null = null;
-  private _retroHandle:     Vec2 | null = null;
-  private _normHandle:      Vec2 | null = null;
-  private _antinormHandle:  Vec2 | null = null;
+  // ── Encounter cache ───────────────────────────────────────────────────────
+  private _encounter:         MoonEncounter | null = null;
+  private _postNodeEncounter: MoonEncounter | null = null;
 
-  /** Prograde direction in screen space at node (world +Y → screen -Y) */
+  // ── Screen-space hit-test targets ─────────────────────────────────────────
+  private _nodeScreenPt:   Vec2 | null = null;
+  private _progHandle:     Vec2 | null = null;
+  private _retroHandle:    Vec2 | null = null;
+  private _normHandle:     Vec2 | null = null;
+  private _antinormHandle: Vec2 | null = null;
+
   private _progradeScreenDir: Vec2 = { x: 0, y: -1 };
-  /** Radial-out direction in screen space at node */
-  private _radialScreenDir:   Vec2 = { x: 1, y: 0 };
+  private _radialScreenDir:   Vec2 = { x: 1, y:  0 };
 
   // ── Handle drag state ─────────────────────────────────────────────────────
   private _dragging: 'prograde' | 'retrograde' | 'normal' | 'antinormal' | null = null;
@@ -126,10 +125,10 @@ export class MapView {
   private _dragLastY = 0;
 
   constructor(ctx: CanvasRenderingContext2D, atmo: Atmosphere) {
-    this.ctx = ctx;
+    this.ctx  = ctx;
     this.atmo = atmo;
-    this.W = ctx.canvas.width;
-    this.H = ctx.canvas.height;
+    this.W    = ctx.canvas.width;
+    this.H    = ctx.canvas.height;
   }
 
   resize(w: number, h: number): void {
@@ -140,7 +139,7 @@ export class MapView {
   // ─── Full Map Render ──────────────────────────────────────────────────────
 
   render(rocket: Rocket, wallTime: number, missionTime: number, _onBack?: () => void): void {
-    const ctx = this.ctx;
+    const ctx     = this.ctx;
     const { W, H } = this;
 
     ctx.fillStyle = 'rgba(4,8,16,0.90)';
@@ -148,24 +147,46 @@ export class MapView {
 
     this.mpp = R_EARTH / (H * 0.20);
 
-    this._drawGrid();
+    this._drawGrid(missionTime);
+    this._drawMoon(missionTime);
     this._drawEarth();
 
     // Refresh trajectory every 60 frames
     this.pathAge++;
     if (this.pathAge > 60 || this.cachedPath.length === 0) {
-      this.cachedPath = this._predictPath(rocket.body.pos, rocket.body.vel, missionTime, 600, 10);
-      this.pathAge = 0;
+      this.cachedPath  = this._predictPath(rocket.body.pos, rocket.body.vel, missionTime, 600, 10);
+      this._encounter  = this._findEncounter(this.cachedPath);
+      this.pathAge     = 0;
       if (this.node) this._recomputePostNode();
     }
 
-    this._drawTrajectory();
-    if (this.node && this.postNodePath.length > 1) this._drawPostNodeTrajectory();
+    this._drawTrajectory(this.cachedPath, false);
+    if (this.node && this.postNodePath.length > 1) {
+      this._drawTrajectory(this.postNodePath, true);
+    }
+
     this._drawOrbMarkers(this.cachedPath);
+    if (this.node && this.postNodePath.length > 1) {
+      this._drawOrbMarkersPost(this.postNodePath);
+    }
+
+    if (this._encounter) {
+      this._drawEncounterMarker(this._encounter, this.cachedPath, missionTime, false);
+    }
+    if (this._postNodeEncounter) {
+      this._drawEncounterMarker(this._postNodeEncounter, this.postNodePath, missionTime, true);
+    }
+
     this._drawRocketMarker(rocket, wallTime);
     if (this.node) this._drawManeuverNode(missionTime);
 
-    this._drawOrbitalInfo(rocket);
+    // Orbital info — switches to lunar elements inside Moon SOI
+    this._drawOrbitalInfo(rocket, missionTime);
+
+    // Transfer guidance hints (only when no encounter predicted yet)
+    if (!this._encounter && !this._postNodeEncounter) {
+      this._drawTransferHints(rocket, missionTime);
+    }
 
     ctx.fillStyle = THEME.accent;
     ctx.font = 'bold 14px Courier New';
@@ -177,7 +198,7 @@ export class MapView {
     ctx.fillText('M — flight  |  Click trajectory — place node  |  Click node — delete', W / 2, 46);
   }
 
-  // ─── Trajectory Prediction ───────────────────────────────────────────────
+  // ─── Trajectory Prediction (patched conics) ───────────────────────────────
 
   private _predictPath(
     startPos: Vec2, startVel: Vec2, startT: number, steps: number, dt: number,
@@ -187,75 +208,113 @@ export class MapView {
     let vel = vec2.clone(startVel);
     let t   = startT;
 
-    // Track cumulative angle swept to stop after exactly one orbit
     let prevAngle  = Math.atan2(pos.y, pos.x);
     let totalAngle = 0;
 
     for (let i = 0; i < steps; i++) {
-      path.push({ pos: vec2.clone(pos), vel: vec2.clone(vel), t });
+      // Moon state at this integration time
+      const moonPos  = getMoonPosition(t);
+      const dx       = pos.x - moonPos.x;
+      const dy       = pos.y - moonPos.y;
+      const moonDist = Math.sqrt(dx * dx + dy * dy);
+      const inSOI    = moonDist < MOON_SOI && moonDist > 0;
+
+      path.push({ pos: vec2.clone(pos), vel: vec2.clone(vel), t, inMoonSOI: inSOI });
 
       const r = vec2.length(pos);
-      if (r < R_EARTH) break;    // suborbital impact
+      if (r < R_EARTH)  break;        // Earth impact
+      if (moonDist < R_MOON) break;   // Lunar impact
 
-      const gMag = MU_EARTH / (r * r);
-      const gDir = vec2.scale(pos, -1 / r);
+      // Patched-conic gravity: only one body at a time
+      if (inSOI) {
+        const gMag = MU_MOON / (moonDist * moonDist);
+        vel.x += -(dx / moonDist) * gMag * dt;
+        vel.y += -(dy / moonDist) * gMag * dt;
+      } else {
+        const gMag = MU_EARTH / (r * r);
+        vel.x += -(pos.x / r) * gMag * dt;
+        vel.y += -(pos.y / r) * gMag * dt;
 
-      vel.x += gDir.x * gMag * dt;
-      vel.y += gDir.y * gMag * dt;
+        // Count Earth-relative orbit angle (only outside SOI)
+        const curAngle = Math.atan2(pos.y, pos.x);
+        let dA = curAngle - prevAngle;
+        if (dA >  Math.PI) dA -= 2 * Math.PI;
+        if (dA < -Math.PI) dA += 2 * Math.PI;
+        totalAngle += Math.abs(dA);
+        prevAngle   = curAngle;
+        if (i > 20 && totalAngle >= 2 * Math.PI) break;
+      }
+
       pos.x += vel.x * dt;
       pos.y += vel.y * dt;
-      t += dt;
-
-      // Accumulate angle swept (unwrap to keep each step in (−π, π])
-      const curAngle = Math.atan2(pos.y, pos.x);
-      let dA = curAngle - prevAngle;
-      if (dA >  Math.PI) dA -= 2 * Math.PI;
-      if (dA < -Math.PI) dA += 2 * Math.PI;
-      totalAngle += Math.abs(dA);
-      prevAngle   = curAngle;
-
-      // Stop after one full orbit (avoids ugly overlapping loops)
-      if (i > 20 && totalAngle >= 2 * Math.PI) break;
+      t     += dt;
     }
 
     return path;
   }
 
   private _recomputePostNode(): void {
-    if (!this.node) { this.postNodePath = []; return; }
+    if (!this.node) { this.postNodePath = []; this._postNodeEncounter = null; return; }
 
     const base = this.cachedPath[this._nodeIdx];
-    if (!base) { this.postNodePath = []; return; }
+    if (!base)  { this.postNodePath = []; this._postNodeEncounter = null; return; }
 
-    // Apply maneuver ΔV at node position
-    const prograde   = vec2.normalize(base.vel);
-    const radialOut  = vec2.normalize(base.pos);
+    const prograde  = vec2.normalize(base.vel);
+    const radialOut = vec2.normalize(base.pos);
 
     const newVel: Vec2 = {
       x: base.vel.x + this.node.progradeDV * prograde.x + this.node.normalDV * radialOut.x,
       y: base.vel.y + this.node.progradeDV * prograde.y + this.node.normalDV * radialOut.y,
     };
 
-    this.postNodePath = this._predictPath(base.pos, newVel, base.t, 400, 10);
+    this.postNodePath        = this._predictPath(base.pos, newVel, base.t, 600, 10);
+    this._postNodeEncounter  = this._findEncounter(this.postNodePath);
+  }
+
+  // ─── Encounter Detection ──────────────────────────────────────────────────
+
+  private _findEncounter(path: TrajPoint[]): MoonEncounter | null {
+    let entryIdx   = -1;
+    let closestIdx = -1;
+    let minDist    = Infinity;
+
+    for (let i = 0; i < path.length; i++) {
+      const pt = path[i];
+      if (!pt.inMoonSOI) continue;
+
+      if (entryIdx === -1) entryIdx = i;
+
+      const moonPos = getMoonPosition(pt.t);
+      const dist    = vec2.length(vec2.sub(pt.pos, moonPos)) - R_MOON;
+      if (dist < minDist) { minDist = dist; closestIdx = i; }
+    }
+
+    if (entryIdx === -1) return null;
+
+    return {
+      entryIdx,
+      entryT:                 path[entryIdx].t,
+      closestIdx,
+      closestDistFromSurface: minDist,
+      isImpact:               minDist < 0,
+    };
   }
 
   // ─── Interaction ─────────────────────────────────────────────────────────
 
   handleClick(mx: number, my: number): boolean {
-    // Suppress click after a pan gesture
     if (this._didPan) { this._didPan = false; return false; }
 
-    // Click on existing node marker → delete
     if (this.node && this._nodeScreenPt) {
       const d = Math.hypot(mx - this._nodeScreenPt.x, my - this._nodeScreenPt.y);
       if (d < 14) {
         this.node = null;
         this.postNodePath = [];
+        this._postNodeEncounter = null;
         return true;
       }
     }
 
-    // Click near trajectory path → place / move node
     if (this.cachedPath.length === 0) return false;
 
     let bestIdx = -1, bestDist = 22;
@@ -267,7 +326,7 @@ export class MapView {
 
     if (bestIdx >= 0) {
       const pt = this.cachedPath[bestIdx];
-      this.node = { time: pt.t, progradeDV: 0, normalDV: 0, executed: false };
+      this.node     = { time: pt.t, progradeDV: 0, normalDV: 0, executed: false };
       this._nodeIdx = bestIdx;
       this._recomputePostNode();
       return true;
@@ -277,7 +336,7 @@ export class MapView {
   }
 
   handleMouseDown(mx: number, my: number): void {
-    this._didPan = false;
+    this._didPan  = false;
     this._dragging = null;
 
     if (this.node) {
@@ -289,9 +348,9 @@ export class MapView {
       ];
       for (const [label, sp] of handles) {
         if (sp && Math.hypot(mx - sp.x, my - sp.y) < 16) {
-          this._dragging   = label;
-          this._dragLastX  = mx;
-          this._dragLastY  = my;
+          this._dragging  = label;
+          this._dragLastX = mx;
+          this._dragLastY = my;
           return;
         }
       }
@@ -313,18 +372,10 @@ export class MapView {
       const nr = this._radialScreenDir;
 
       switch (this._dragging) {
-        case 'prograde':
-          this.node.progradeDV += (dx * pv.x + dy * pv.y) * DV_PER_PX;
-          break;
-        case 'retrograde':
-          this.node.progradeDV -= (dx * pv.x + dy * pv.y) * DV_PER_PX;
-          break;
-        case 'normal':
-          this.node.normalDV   += (dx * nr.x + dy * nr.y) * DV_PER_PX;
-          break;
-        case 'antinormal':
-          this.node.normalDV   -= (dx * nr.x + dy * nr.y) * DV_PER_PX;
-          break;
+        case 'prograde':   this.node.progradeDV += (dx * pv.x + dy * pv.y) * DV_PER_PX; break;
+        case 'retrograde': this.node.progradeDV -= (dx * pv.x + dy * pv.y) * DV_PER_PX; break;
+        case 'normal':     this.node.normalDV   += (dx * nr.x + dy * nr.y) * DV_PER_PX; break;
+        case 'antinormal': this.node.normalDV   -= (dx * nr.x + dy * nr.y) * DV_PER_PX; break;
       }
 
       this._recomputePostNode();
@@ -344,13 +395,17 @@ export class MapView {
 
   handleWheel(e: WheelEvent): void {
     const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
-    this.userScale = Math.max(0.25, Math.min(80, this.userScale * factor));
+    this.userScale = Math.max(0.005, Math.min(80, this.userScale * factor));
   }
 
   resetView(): void {
     this.panX = 0;
     this.panY = 0;
-    this.userScale = 1.0;
+    // Zoom out so the Moon's orbit fills ~38% of the smaller screen dimension.
+    // mpp = R_EARTH / (H * 0.20) is computed in render(), but we can derive it here.
+    const mppNow = R_EARTH / (this.H * 0.20);
+    const screenR = Math.min(this.W, this.H) * 0.38;
+    this.userScale = (mppNow * screenR) / MOON_ORBIT_RADIUS;
   }
 
   // ─── Drawing Helpers ──────────────────────────────────────────────────────
@@ -364,117 +419,19 @@ export class MapView {
     };
   }
 
-  // ─── Draw Trajectory (base) ───────────────────────────────────────────────
+  // ─── Draw Trajectory ──────────────────────────────────────────────────────
 
-  private _drawTrajectory(): void {
-    const ctx  = this.ctx;
-    const path = this.cachedPath;
-    if (path.length < 2) return;
+  private _drawTrajectory(path: TrajPoint[], isPlanned: boolean): void {
+    const ctx = this.ctx;
+    const n   = path.length;
+    if (n < 2) return;
 
-    const n = path.length;
     ctx.save();
     ctx.setLineDash([]);
 
-    // ── Solid segments with fading opacity (bright near rocket → dim at end) ─
     for (let i = 1; i < n; i++) {
       const frac  = i / n;
-      const alpha = Math.max(0.10, 0.82 - frac * 0.72);
-
-      const s0 = this._w2s(path[i - 1].pos);
-      const s1 = this._w2s(path[i].pos);
-
-      // Off-screen cull
-      if (s0.x < -300 && s1.x < -300) continue;
-      if (s0.x > this.W + 300 && s1.x > this.W + 300) continue;
-
-      const alt    = vec2.length(path[i].pos) - R_EARTH;
-      const inAtmo = this.atmo.isInAtmosphere(alt);
-
-      ctx.beginPath();
-      ctx.moveTo(s0.x, s0.y);
-      ctx.lineTo(s1.x, s1.y);
-      ctx.strokeStyle = inAtmo
-        ? `rgba(255,150,50,${alpha.toFixed(2)})`
-        : `rgba(0,210,255,${alpha.toFixed(2)})`;
-      ctx.lineWidth = 2;
-      ctx.stroke();
-    }
-
-    // ── Direction arrows (chevrons along path every ~1/10th of total) ───────
-    const step = Math.max(8, Math.floor(n / 10));
-    for (let i = step; i < n - 1; i += step) {
-      const frac  = i / n;
-      if (frac > 0.88) break;
-
-      const s0 = this._w2s(path[i].pos);
-      const s1 = this._w2s(path[i + 1].pos);
-      const dx = s1.x - s0.x, dy = s1.y - s0.y;
-      const segLen = Math.hypot(dx, dy);
-      if (segLen < 5) continue;  // too small to bother
-
-      const ang   = Math.atan2(dy, dx);
-      const cx    = (s0.x + s1.x) / 2;
-      const cy    = (s0.y + s1.y) / 2;
-      const alpha = Math.max(0.15, 0.55 - frac * 0.40);
-
-      const alt    = vec2.length(path[i].pos) - R_EARTH;
-      const inAtmo = this.atmo.isInAtmosphere(alt);
-      const color  = inAtmo
-        ? `rgba(255,170,70,${alpha.toFixed(2)})`
-        : `rgba(0,220,255,${alpha.toFixed(2)})`;
-
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.rotate(ang);
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.moveTo( 6,  0);
-      ctx.lineTo(-4,  3.5);
-      ctx.lineTo(-2,  0);
-      ctx.lineTo(-4, -3.5);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
-    }
-
-    // ── Impact marker if trajectory ends inside atmosphere / on surface ──────
-    const last = path[path.length - 1];
-    const lastAlt = vec2.length(last.pos) - R_EARTH;
-    if (lastAlt < 70_000) {
-      const sp = this._w2s(last.pos);
-      ctx.beginPath();
-      ctx.arc(sp.x, sp.y, 6, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,80,0,0.85)';
-      ctx.fill();
-      ctx.strokeStyle = '#fff';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      ctx.fillStyle = THEME.danger;
-      ctx.font = 'bold 10px Courier New';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('IMPACT', sp.x + 9, sp.y);
-      ctx.textBaseline = 'alphabetic';
-    }
-
-    ctx.restore();
-  }
-
-  // ─── Draw Post-node Trajectory (yellow preview) ───────────────────────────
-
-  private _drawPostNodeTrajectory(): void {
-    const ctx  = this.ctx;
-    const path = this.postNodePath;
-    if (path.length < 2) return;
-
-    const n = path.length;
-    ctx.save();
-    ctx.setLineDash([]);
-
-    // Fading yellow segments
-    for (let i = 1; i < n; i++) {
-      const frac  = i / n;
-      const alpha = Math.max(0.08, 0.80 - frac * 0.72);
+      const alpha = Math.max(0.08, (isPlanned ? 0.80 : 0.82) - frac * 0.72);
 
       const s0 = this._w2s(path[i - 1].pos);
       const s1 = this._w2s(path[i].pos);
@@ -482,15 +439,35 @@ export class MapView {
       if (s0.x < -300 && s1.x < -300) continue;
       if (s0.x > this.W + 300 && s1.x > this.W + 300) continue;
 
+      const inSOI  = path[i].inMoonSOI;
+      const alt    = vec2.length(path[i].pos) - R_EARTH;
+      const inAtmo = !inSOI && this.atmo.isInAtmosphere(alt);
+
+      let color: string;
+      if (inSOI) {
+        // Moon-relative segment: teal-green
+        color = isPlanned
+          ? `rgba(100,255,200,${alpha.toFixed(2)})`
+          : `rgba(60,220,160,${alpha.toFixed(2)})`;
+      } else if (inAtmo) {
+        color = isPlanned
+          ? `rgba(255,200,80,${alpha.toFixed(2)})`
+          : `rgba(255,150,50,${alpha.toFixed(2)})`;
+      } else {
+        color = isPlanned
+          ? `rgba(255,210,0,${alpha.toFixed(2)})`
+          : `rgba(0,210,255,${alpha.toFixed(2)})`;
+      }
+
       ctx.beginPath();
       ctx.moveTo(s0.x, s0.y);
       ctx.lineTo(s1.x, s1.y);
-      ctx.strokeStyle = `rgba(255,210,0,${alpha.toFixed(2)})`;
-      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = color;
+      ctx.lineWidth   = isPlanned ? 2.5 : 2;
       ctx.stroke();
     }
 
-    // Direction arrows
+    // Direction chevrons
     const step = Math.max(8, Math.floor(n / 10));
     for (let i = step; i < n - 1; i += step) {
       const frac = i / n;
@@ -502,10 +479,17 @@ export class MapView {
       if (Math.hypot(dx, dy) < 5) continue;
 
       const alpha = Math.max(0.15, 0.55 - frac * 0.40);
+      const inSOI = path[i].inMoonSOI;
+      const arrowColor = inSOI
+        ? `rgba(80,240,170,${alpha.toFixed(2)})`
+        : isPlanned
+          ? `rgba(255,220,60,${alpha.toFixed(2)})`
+          : `rgba(0,220,255,${alpha.toFixed(2)})`;
+
       ctx.save();
       ctx.translate((s0.x + s1.x) / 2, (s0.y + s1.y) / 2);
       ctx.rotate(Math.atan2(dy, dx));
-      ctx.fillStyle = `rgba(255,220,60,${alpha.toFixed(2)})`;
+      ctx.fillStyle = arrowColor;
       ctx.beginPath();
       ctx.moveTo( 6,  0);
       ctx.lineTo(-4,  3.5);
@@ -516,31 +500,78 @@ export class MapView {
       ctx.restore();
     }
 
-    ctx.restore();
+    // Impact marker if trajectory ends near surface
+    const last    = path[path.length - 1];
+    const lastAlt = vec2.length(last.pos) - R_EARTH;
+    if (lastAlt < 70_000 && !last.inMoonSOI) {
+      const sp = this._w2s(last.pos);
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, 6, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,80,0,0.85)';
+      ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.fillStyle = THEME.danger;
+      ctx.font = 'bold 10px Courier New';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText('IMPACT', sp.x + 9, sp.y);
+      ctx.textBaseline = 'alphabetic';
+    }
 
-    this._drawOrbMarkers(this.postNodePath, '#ffcc00', '#ffaa00');
+    // Lunar impact marker
+    if (last.inMoonSOI) {
+      const moonPos = getMoonPosition(last.t);
+      const dist    = vec2.length(vec2.sub(last.pos, moonPos));
+      if (dist < R_MOON * 1.05) {
+        const sp = this._w2s(last.pos);
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, 6, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(200,120,0,0.9)';
+        ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+        ctx.fillStyle = THEME.warning;
+        ctx.font = 'bold 10px Courier New';
+        ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+        ctx.fillText('LUNAR IMPACT', sp.x + 9, sp.y);
+        ctx.textBaseline = 'alphabetic';
+      }
+    }
+
+    ctx.restore();
   }
 
   // ─── Periapsis / Apoapsis markers ────────────────────────────────────────
 
-  private _drawOrbMarkers(
-    path: TrajPoint[],
-    peColor: string = THEME.warning,
-    apColor: string = THEME.accent,
-  ): void {
+  private _drawOrbMarkers(path: TrajPoint[]): void {
     if (path.length < 2) return;
+    // Only use Earth-relative (non-SOI) points
+    const earthPts = path.filter(p => !p.inMoonSOI);
+    if (earthPts.length < 2) return;
 
     let minR = Infinity, maxR = -Infinity;
-    let minPos = path[0].pos, maxPos = path[0].pos;
-
-    for (const pt of path) {
+    let minPos = earthPts[0].pos, maxPos = earthPts[0].pos;
+    for (const pt of earthPts) {
       const r = vec2.length(pt.pos);
       if (r < minR) { minR = r; minPos = pt.pos; }
       if (r > maxR) { maxR = r; maxPos = pt.pos; }
     }
+    this._drawOrbMarker(minPos, 'Pe', THEME.warning);
+    this._drawOrbMarker(maxPos, 'Ap', THEME.accent);
+  }
 
-    this._drawOrbMarker(minPos, 'Pe', peColor);
-    this._drawOrbMarker(maxPos, 'Ap', apColor);
+  private _drawOrbMarkersPost(path: TrajPoint[]): void {
+    if (path.length < 2) return;
+    const earthPts = path.filter(p => !p.inMoonSOI);
+    if (earthPts.length < 2) return;
+
+    let minR = Infinity, maxR = -Infinity;
+    let minPos = earthPts[0].pos, maxPos = earthPts[0].pos;
+    for (const pt of earthPts) {
+      const r = vec2.length(pt.pos);
+      if (r < minR) { minR = r; minPos = pt.pos; }
+      if (r > maxR) { maxR = r; maxPos = pt.pos; }
+    }
+    this._drawOrbMarker(minPos, 'Pe', '#ffcc00');
+    this._drawOrbMarker(maxPos, 'Ap', '#ffaa00');
   }
 
   private _drawOrbMarker(worldPos: Vec2, label: string, color: string): void {
@@ -555,11 +586,219 @@ export class MapView {
     ctx.fillStyle = color;
     ctx.font = 'bold 11px Courier New';
     ctx.textAlign = 'left';
-    const alt = vec2.length(worldPos) - R_EARTH;
+    const alt    = vec2.length(worldPos) - R_EARTH;
     const altStr = alt < 1_000_000
       ? `${(alt / 1000).toFixed(1)} km`
       : `${(alt / 1_000_000).toFixed(3)} Mm`;
     ctx.fillText(`${label}: ${altStr}`, sp.x + 8, sp.y - 4);
+  }
+
+  // ─── Moon Drawing ─────────────────────────────────────────────────────────
+
+  private _drawMoon(missionTime: number): void {
+    const ctx       = this.ctx;
+    const moonWorld = getMoonPosition(missionTime);
+    const moonSP    = this._w2s(moonWorld);
+    const earthSP   = this._w2s({ x: 0, y: 0 });
+    const moonR     = R_MOON            / this.eMpp;
+    const soiR      = MOON_SOI          / this.eMpp;
+    const orbitR    = MOON_ORBIT_RADIUS / this.eMpp;
+
+    // Moon orbital path (very faint dashed ring)
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(earthSP.x, earthSP.y, orbitR, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(100,100,140,0.22)';
+    ctx.lineWidth   = 1;
+    ctx.setLineDash([4, 14]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    // SOI boundary (dashed teal ring)
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(moonSP.x, moonSP.y, Math.max(soiR, 4), 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(80,200,170,0.35)';
+    ctx.lineWidth   = 1.2;
+    ctx.setLineDash([6, 8]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    // SOI label
+    if (soiR > 10) {
+      ctx.fillStyle = 'rgba(80,200,170,0.55)';
+      ctx.font = '9px Courier New';
+      ctx.textAlign = 'right';
+      ctx.fillText('SOI', moonSP.x + soiR - 3, moonSP.y - 4);
+    }
+
+    // Moon body
+    const drawR = Math.max(moonR, 4);
+    const grad  = ctx.createRadialGradient(
+      moonSP.x - drawR * 0.28, moonSP.y - drawR * 0.28, drawR * 0.04,
+      moonSP.x, moonSP.y, drawR,
+    );
+    grad.addColorStop(0,   '#d0d0d0');
+    grad.addColorStop(0.5, '#a0a0a0');
+    grad.addColorStop(1,   '#585858');
+
+    ctx.beginPath();
+    ctx.arc(moonSP.x, moonSP.y, drawR, 0, Math.PI * 2);
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(200,200,220,0.25)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Label
+    ctx.fillStyle = 'rgba(210,210,230,0.9)';
+    ctx.font = 'bold 10px Courier New';
+    ctx.textAlign = 'left';
+    ctx.fillText('MOON', moonSP.x + drawR + 5, moonSP.y + 4);
+  }
+
+  // ─── Encounter Marker ─────────────────────────────────────────────────────
+
+  private _drawEncounterMarker(
+    enc:          MoonEncounter,
+    path:         TrajPoint[],
+    missionTime:  number,
+    isPlanned:    boolean,
+  ): void {
+    const ctx = this.ctx;
+    const pt  = path[enc.entryIdx];
+    if (!pt) return;
+
+    const sp    = this._w2s(pt.pos);
+    const color = isPlanned ? '#ffdd00' : '#00ffcc';
+
+    // Entry ring
+    ctx.beginPath();
+    ctx.arc(sp.x, sp.y, 8, 0, Math.PI * 2);
+    ctx.fillStyle   = color + '44';
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = 1.8;
+    ctx.stroke();
+
+    // Closest approach marker
+    const ca = path[enc.closestIdx];
+    if (ca) {
+      const caSP = this._w2s(ca.pos);
+      ctx.beginPath();
+      ctx.arc(caSP.x, caSP.y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = enc.isImpact ? THEME.danger : color;
+      ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke();
+    }
+
+    // Info panel
+    const timeToEnc = enc.entryT - missionTime;
+    const distKm    = Math.max(0, enc.closestDistFromSurface / 1000).toFixed(0);
+    const status    = enc.isImpact
+      ? 'IMPACT TRAJECTORY'
+      : enc.closestDistFromSurface < 5_000_000
+        ? 'LUNAR ORBIT POSSIBLE'
+        : 'LUNAR FLYBY';
+
+    const statusColor = enc.isImpact ? THEME.danger
+      : enc.closestDistFromSurface < 5_000_000 ? THEME.success
+      : THEME.warning;
+
+    const pw = 210, ph = 108;
+    let px = sp.x + 14;
+    if (px + pw > this.W - 10) px = sp.x - pw - 14;
+    const py = Math.max(10, Math.min(this.H - ph - 10, sp.y - ph / 2));
+
+    ctx.fillStyle = 'rgba(6,12,22,0.93)';
+    this._roundRect(px, py, pw, ph, 6); ctx.fill();
+    ctx.strokeStyle = color; ctx.lineWidth = 1;
+    this._roundRect(px, py, pw, ph, 6); ctx.stroke();
+
+    ctx.fillStyle   = color;
+    ctx.font        = 'bold 11px Courier New';
+    ctx.textAlign   = 'center';
+    ctx.fillText(isPlanned ? 'PLANNED ENCOUNTER' : 'MOON ENCOUNTER', px + pw / 2, py + 16);
+
+    const rows: [string, string, string][] = [
+      ['T−',    timeToEnc < 0 ? 'PAST' : this._fmtTime(timeToEnc), THEME.text],
+      ['CA',    `${distKm} km`,                                      THEME.text],
+      ['',      status,                                               statusColor],
+    ];
+    rows.forEach(([k, v, c], i) => {
+      const ry = py + 32 + i * 22;
+      if (k) {
+        ctx.fillStyle = THEME.textDim; ctx.font = '10px Courier New'; ctx.textAlign = 'left';
+        ctx.fillText(k, px + 10, ry);
+      }
+      ctx.fillStyle = c; ctx.font = k ? '10px Courier New' : 'bold 10px Courier New';
+      ctx.textAlign = k ? 'right' : 'center';
+      ctx.fillText(v, k ? px + pw - 10 : px + pw / 2, ry);
+    });
+
+    ctx.fillStyle = THEME.textDim; ctx.font = '9px Courier New'; ctx.textAlign = 'center';
+    ctx.fillText('[click node to delete]', px + pw / 2, py + ph - 6);
+  }
+
+  // ─── Transfer Hints ───────────────────────────────────────────────────────
+
+  private _drawTransferHints(rocket: Rocket, missionTime: number): void {
+    const ctx     = this.ctx;
+    const pos     = rocket.body.pos;
+    const vel     = rocket.body.vel;
+    const orb     = computeOrbitalElements(pos, vel);
+
+    // Only meaningful when in orbit (not suborbital, not escaped)
+    if (orb.periAlt < 0 || orb.apoAlt === Infinity) return;
+
+    const moonPos   = getMoonPosition(missionTime);
+    const moonOrbit = MOON_ORBIT_RADIUS - R_EARTH;
+    const apoAlt    = orb.apoAlt;
+
+    // Phase angle: how far ahead or behind the Moon is from the rocket's current position
+    const moonAngle = Math.atan2(moonPos.y, moonPos.x);
+    const rktAngle  = Math.atan2(pos.y, pos.x);
+    let   angleDiff = moonAngle - rktAngle;
+    while (angleDiff >  Math.PI) angleDiff -= 2 * Math.PI;
+    while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+
+    const hints: string[] = [];
+
+    if (apoAlt < moonOrbit * 0.7) {
+      hints.push('▲ BURN PROGRADE to raise Ap toward Moon orbit');
+    } else if (apoAlt >= moonOrbit * 0.7 && apoAlt <= moonOrbit * 1.4) {
+      if (angleDiff > 0.35) {
+        hints.push('↻ Moon is AHEAD — place node later or wait');
+      } else if (angleDiff < -0.35) {
+        hints.push('↺ Moon is BEHIND — place node earlier / burn now');
+      } else {
+        hints.push('✓ Ap near Moon orbit — add node at Pe to intercept');
+      }
+    } else if (apoAlt > moonOrbit * 1.4) {
+      hints.push('▼ Ap past Moon orbit — trim retrograde to match');
+    }
+
+    if (hints.length === 0) return;
+
+    const pw = 340, ph = 14 + hints.length * 18 + 10;
+    const px = 16,  py = this.H - ph - 60;
+
+    ctx.fillStyle   = 'rgba(6,12,22,0.85)';
+    this._roundRect(px, py, pw, ph, 6); ctx.fill();
+    ctx.strokeStyle = 'rgba(60,140,220,0.4)'; ctx.lineWidth = 1;
+    this._roundRect(px, py, pw, ph, 6); ctx.stroke();
+
+    ctx.fillStyle = THEME.accentDim;
+    ctx.font = 'bold 9px Courier New'; ctx.textAlign = 'left';
+    ctx.fillText('TRANSFER GUIDANCE', px + 10, py + 12);
+
+    hints.forEach((h, i) => {
+      ctx.fillStyle = THEME.text;
+      ctx.font = '10px Courier New';
+      ctx.fillText(h, px + 10, py + 26 + i * 18);
+    });
   }
 
   // ─── Maneuver Node Marker + Handles ──────────────────────────────────────
@@ -568,14 +807,13 @@ export class MapView {
     if (!this.node) return;
 
     const base = this.cachedPath[this._nodeIdx];
-    if (!base) return;
+    if (!base)  return;
 
     const ctx = this.ctx;
     const sp  = this._w2s(base.pos);
     this._nodeScreenPt = sp;
 
-    // Compute screen-space direction vectors (world +Y → screen -Y)
-    const vel = base.vel;
+    const vel  = base.vel;
     const prog = vec2.length(vel) > 1 ? vec2.normalize(vel) : { x: 1, y: 0 };
     const rOut = vec2.normalize(base.pos);
 
@@ -585,7 +823,6 @@ export class MapView {
     const pv = this._progradeScreenDir;
     const nr = this._radialScreenDir;
 
-    // Arm lengths: base radius + visual extension from dV magnitude
     const proArm   = HANDLE_R + Math.max(0,  this.node.progradeDV) * DV_VIS_PX;
     const retroArm = HANDLE_R + Math.max(0, -this.node.progradeDV) * DV_VIS_PX;
     const normArm  = HANDLE_R + Math.max(0,  this.node.normalDV)   * DV_VIS_PX;
@@ -598,58 +835,33 @@ export class MapView {
 
     ctx.save();
 
-    // ── Arms (node → handle) ──────────────────────────────────────────────
     const drawArm = (end: Vec2, color: string) => {
-      ctx.beginPath();
-      ctx.moveTo(sp.x, sp.y);
-      ctx.lineTo(end.x, end.y);
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(sp.x, sp.y); ctx.lineTo(end.x, end.y);
+      ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
     };
-
     drawArm(this._progHandle,     '#44ff88');
     drawArm(this._retroHandle,    '#ff4444');
     drawArm(this._normHandle,     '#ff88ff');
     drawArm(this._antinormHandle, '#44ffff');
 
-    // ── Handle circles with directional arrowhead ─────────────────────────
-    // arrowAngle = direction FROM node TO handle in screen space
     const drawHandle = (pos: Vec2, color: string, label: string) => {
-      const HR = 10;  // handle circle radius
+      const HR = 10;
+      ctx.beginPath(); ctx.arc(pos.x, pos.y, HR, 0, Math.PI * 2);
+      ctx.fillStyle = color; ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 1; ctx.stroke();
 
-      // Circle fill
-      ctx.beginPath();
-      ctx.arc(pos.x, pos.y, HR, 0, Math.PI * 2);
-      ctx.fillStyle = color;
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
-      ctx.lineWidth = 1;
-      ctx.stroke();
-
-      // Arrowhead pointing away from node (rotate canvas so +Y = away-from-node)
       const ang = Math.atan2(pos.y - sp.y, pos.x - sp.x);
-      ctx.save();
-      ctx.translate(pos.x, pos.y);
-      ctx.rotate(ang);
+      ctx.save(); ctx.translate(pos.x, pos.y); ctx.rotate(ang);
       ctx.fillStyle = 'rgba(0,0,0,0.75)';
       ctx.beginPath();
-      ctx.moveTo( HR * 0.55,  0);
-      ctx.lineTo(-HR * 0.30,  HR * 0.38);
-      ctx.lineTo(-HR * 0.30, -HR * 0.38);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
+      ctx.moveTo( HR * 0.55, 0); ctx.lineTo(-HR * 0.30,  HR * 0.38); ctx.lineTo(-HR * 0.30, -HR * 0.38);
+      ctx.closePath(); ctx.fill(); ctx.restore();
 
-      // Label outside the circle, offset further along the arm direction
       const lx = pos.x + (pos.x - sp.x) / Math.hypot(pos.x - sp.x, pos.y - sp.y || 1) * (HR + 10);
       const ly = pos.y + (pos.y - sp.y) / Math.hypot(pos.x - sp.x || 1, pos.y - sp.y) * (HR + 10);
-      ctx.fillStyle = color;
-      ctx.font = 'bold 9px Courier New';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(label, lx, ly);
-      ctx.textBaseline = 'alphabetic';
+      ctx.fillStyle = color; ctx.font = 'bold 9px Courier New';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(label, lx, ly); ctx.textBaseline = 'alphabetic';
     };
 
     drawHandle(this._progHandle,     '#44ff88', 'PRO');
@@ -657,119 +869,92 @@ export class MapView {
     drawHandle(this._normHandle,     '#ff88ff', 'NOR');
     drawHandle(this._antinormHandle, '#44ffff', 'ANT');
 
-    // ── Node centre ───────────────────────────────────────────────────────
-    ctx.beginPath();
-    ctx.arc(sp.x, sp.y, 9, 0, Math.PI * 2);
-    ctx.fillStyle = THEME.warning;
-    ctx.fill();
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-
-    // Delta mark inside node
-    ctx.fillStyle = '#000';
-    ctx.font = 'bold 11px Courier New';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('Δ', sp.x, sp.y);
-    ctx.textBaseline = 'alphabetic';
+    ctx.beginPath(); ctx.arc(sp.x, sp.y, 9, 0, Math.PI * 2);
+    ctx.fillStyle = THEME.warning; ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.fillStyle = '#000'; ctx.font = 'bold 11px Courier New';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('Δ', sp.x, sp.y); ctx.textBaseline = 'alphabetic';
 
     ctx.restore();
 
-    // ── Info panel ─────────────────────────────────────────────────────────
     this._drawNodeInfoPanel(missionTime, sp);
   }
 
   private _drawNodeInfoPanel(missionTime: number, nodeSP: Vec2): void {
-    const ctx = this.ctx;
+    const ctx  = this.ctx;
     const node = this.node!;
 
     const totalDV    = Math.hypot(node.progradeDV, node.normalDV);
     const timeToNode = node.time - missionTime;
 
     const pw = 210, ph = 100;
-    // Place panel to right of node if room, else left
     const px = (nodeSP.x + 20 + pw < this.W) ? nodeSP.x + 20 : nodeSP.x - pw - 20;
     const py = Math.max(10, Math.min(this.H - ph - 10, nodeSP.y - ph / 2));
 
-    // Panel background
     ctx.fillStyle = 'rgba(8,14,24,0.92)';
-    this._roundRect(px, py, pw, ph, 6);
-    ctx.fill();
-    ctx.strokeStyle = THEME.warning;
-    ctx.lineWidth = 1;
-    this._roundRect(px, py, pw, ph, 6);
-    ctx.stroke();
+    this._roundRect(px, py, pw, ph, 6); ctx.fill();
+    ctx.strokeStyle = THEME.warning; ctx.lineWidth = 1;
+    this._roundRect(px, py, pw, ph, 6); ctx.stroke();
 
-    // Header
-    ctx.fillStyle = THEME.warning;
-    ctx.font = 'bold 11px Courier New';
+    ctx.fillStyle = THEME.warning; ctx.font = 'bold 11px Courier New';
     ctx.textAlign = 'center';
     ctx.fillText('MANEUVER NODE', px + pw / 2, py + 16);
 
-    // Rows
     const rows: [string, string][] = [
-      ['ΔV',     `${totalDV.toFixed(1)} m/s`],
-      ['PRO',    `${node.progradeDV.toFixed(1)} m/s`],
-      ['RAD',    `${node.normalDV.toFixed(1)} m/s`],
-      ['T−',     timeToNode < 0 ? 'PAST NODE' : this._fmtTime(timeToNode)],
+      ['ΔV',  `${totalDV.toFixed(1)} m/s`],
+      ['PRO', `${node.progradeDV.toFixed(1)} m/s`],
+      ['RAD', `${node.normalDV.toFixed(1)} m/s`],
+      ['T−',  timeToNode < 0 ? 'PAST NODE' : this._fmtTime(timeToNode)],
     ];
 
     rows.forEach(([k, v], i) => {
       const ry = py + 32 + i * 18;
-      ctx.fillStyle = THEME.textDim;
-      ctx.font = '10px Courier New';
-      ctx.textAlign = 'left';
+      ctx.fillStyle = THEME.textDim; ctx.font = '10px Courier New'; ctx.textAlign = 'left';
       ctx.fillText(k, px + 10, ry);
       ctx.fillStyle = (k === 'T−' && timeToNode < 60) ? THEME.danger
-                    : (k === 'ΔV') ? THEME.accent
-                    : THEME.text;
+                    : (k === 'ΔV') ? THEME.accent : THEME.text;
       ctx.textAlign = 'right';
       ctx.fillText(v, px + pw - 10, ry);
     });
 
-    // Hint: click to delete
-    ctx.fillStyle = THEME.textDim;
-    ctx.font = '9px Courier New';
-    ctx.textAlign = 'center';
+    ctx.fillStyle = THEME.textDim; ctx.font = '9px Courier New'; ctx.textAlign = 'center';
     ctx.fillText('[click node to delete]', px + pw / 2, py + ph - 6);
   }
 
   // ─── Earth & Grid ─────────────────────────────────────────────────────────
 
   private _drawEarth(): void {
-    const ctx = this.ctx;
+    const ctx    = this.ctx;
     const centre = this._w2s({ x: 0, y: 0 });
     const earthR = R_EARTH / this.eMpp;
+    const atmoR  = (R_EARTH + 70_000) / this.eMpp;
 
-    const atmoR = (R_EARTH + 70_000) / this.eMpp;
     const atmoGrad = ctx.createRadialGradient(centre.x, centre.y, earthR * 0.95, centre.x, centre.y, atmoR);
     atmoGrad.addColorStop(0, 'rgba(80,160,255,0.4)');
     atmoGrad.addColorStop(1, 'rgba(0,60,120,0)');
-    ctx.beginPath();
-    ctx.arc(centre.x, centre.y, atmoR, 0, Math.PI * 2);
-    ctx.fillStyle = atmoGrad;
-    ctx.fill();
+    ctx.beginPath(); ctx.arc(centre.x, centre.y, atmoR, 0, Math.PI * 2);
+    ctx.fillStyle = atmoGrad; ctx.fill();
 
     const earthGrad = ctx.createRadialGradient(
       centre.x - earthR * 0.3, centre.y - earthR * 0.3, earthR * 0.05,
       centre.x, centre.y, earthR,
     );
-    earthGrad.addColorStop(0, '#4a9eff');
-    earthGrad.addColorStop(0.45, '#1d5ea8');
-    earthGrad.addColorStop(0.8,  '#164d30');
-    earthGrad.addColorStop(1,    '#0d2244');
-
-    ctx.beginPath();
-    ctx.arc(centre.x, centre.y, earthR, 0, Math.PI * 2);
-    ctx.fillStyle = earthGrad;
-    ctx.fill();
+    earthGrad.addColorStop(0,   '#4a9eff');
+    earthGrad.addColorStop(0.45,'#1d5ea8');
+    earthGrad.addColorStop(0.8, '#164d30');
+    earthGrad.addColorStop(1,   '#0d2244');
+    ctx.beginPath(); ctx.arc(centre.x, centre.y, earthR, 0, Math.PI * 2);
+    ctx.fillStyle = earthGrad; ctx.fill();
   }
 
-  private _drawGrid(): void {
-    const ctx = this.ctx;
+  private _drawGrid(missionTime: number): void {
+    const ctx    = this.ctx;
     const centre = this._w2s({ x: 0, y: 0 });
-    const altitudes = [100_000, 500_000, 1_000_000, 3_000_000, 10_000_000];
+
+    // Include Moon orbit altitude as a reference ring
+    const moonOrbitAlt = MOON_ORBIT_RADIUS - R_EARTH;
+    const altitudes = [100_000, 500_000, 1_000_000, 3_000_000, 10_000_000, moonOrbitAlt];
 
     ctx.setLineDash([4, 8]);
     ctx.lineWidth = 0.5;
@@ -777,96 +962,121 @@ export class MapView {
     ctx.font = '10px Courier New';
 
     for (const alt of altitudes) {
-      const r = (R_EARTH + alt) / this.eMpp;
+      const r          = (R_EARTH + alt) / this.eMpp;
+      const isMoonOrbit = alt === moonOrbitAlt;
       ctx.beginPath();
       ctx.arc(centre.x, centre.y, r, 0, Math.PI * 2);
-      ctx.strokeStyle = 'rgba(30,80,120,0.5)';
+      ctx.strokeStyle = isMoonOrbit
+        ? 'rgba(100,100,140,0.35)'
+        : 'rgba(30,80,120,0.5)';
       ctx.stroke();
 
-      const labelX = centre.x + r + 4;
+      const labelX   = centre.x + r + 4;
       const labelStr = alt >= 1_000_000
-        ? `${(alt / 1_000_000).toFixed(0)} Mm`
+        ? isMoonOrbit ? 'Moon orbit' : `${(alt / 1_000_000).toFixed(0)} Mm`
         : `${(alt / 1000).toFixed(0)} km`;
-      ctx.fillStyle = 'rgba(60,110,160,0.8)';
+      ctx.fillStyle = isMoonOrbit
+        ? 'rgba(120,120,160,0.7)'
+        : 'rgba(60,110,160,0.8)';
       ctx.fillText(labelStr, labelX, centre.y - 4);
     }
     ctx.setLineDash([]);
+
+    // Suppress unused-parameter warning
+    void missionTime;
   }
 
   // ─── Rocket Marker ────────────────────────────────────────────────────────
 
   private _drawRocketMarker(rocket: Rocket, time: number): void {
-    const ctx = this.ctx;
-    const sp  = this._w2s(rocket.body.pos);
-
+    const ctx   = this.ctx;
+    const sp    = this._w2s(rocket.body.pos);
     const pulse = 0.5 + 0.5 * Math.sin(time * 4);
-    ctx.beginPath();
-    ctx.arc(sp.x, sp.y, 6 + pulse * 4, 0, Math.PI * 2);
-    ctx.strokeStyle = `rgba(0,212,255,${0.3 + pulse * 0.4})`;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
 
-    ctx.beginPath();
-    ctx.arc(sp.x, sp.y, 4, 0, Math.PI * 2);
-    ctx.fillStyle = THEME.accent;
-    ctx.fill();
+    ctx.beginPath(); ctx.arc(sp.x, sp.y, 6 + pulse * 4, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(0,212,255,${0.3 + pulse * 0.4})`;
+    ctx.lineWidth = 1.5; ctx.stroke();
+
+    ctx.beginPath(); ctx.arc(sp.x, sp.y, 4, 0, Math.PI * 2);
+    ctx.fillStyle = THEME.accent; ctx.fill();
 
     const velScaled = vec2.scale(rocket.body.vel, 0.001 / this.eMpp);
     if (vec2.length(velScaled) > 2) {
       const velEnd = { x: sp.x + velScaled.x, y: sp.y - velScaled.y };
-      ctx.beginPath();
-      ctx.moveTo(sp.x, sp.y);
-      ctx.lineTo(velEnd.x, velEnd.y);
-      ctx.strokeStyle = THEME.success;
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(sp.x, sp.y); ctx.lineTo(velEnd.x, velEnd.y);
+      ctx.strokeStyle = THEME.success; ctx.lineWidth = 1.5; ctx.stroke();
     }
 
-    ctx.fillStyle = THEME.text;
-    ctx.font = '10px Courier New';
-    ctx.textAlign = 'left';
+    ctx.fillStyle = THEME.text; ctx.font = '10px Courier New'; ctx.textAlign = 'left';
     ctx.fillText('▲ Rocket', sp.x + 8, sp.y + 4);
   }
 
   // ─── Orbital Info Panel ───────────────────────────────────────────────────
 
-  private _drawOrbitalInfo(rocket: Rocket): void {
+  private _drawOrbitalInfo(rocket: Rocket, missionTime: number): void {
     const ctx = this.ctx;
     const { W } = this;
 
-    const orb = computeOrbitalElements(rocket.body.pos, rocket.body.vel);
+    const moonPos   = getMoonPosition(missionTime);
+    const relToMoon = vec2.sub(rocket.body.pos, moonPos);
+    const moonDist  = vec2.length(relToMoon);
+    const inSOI     = moonDist < MOON_SOI;
 
-    const rows: [string, string][] = [
-      ['Pe',  orb.periAlt < 0 ? 'SUBORBITAL' : orb.periAlt < 1_000_000 ? `${(orb.periAlt / 1000).toFixed(1)} km` : `${(orb.periAlt / 1_000_000).toFixed(3)} Mm`],
-      ['Ap',  orb.apoAlt  === Infinity ? 'ESCAPE' : orb.apoAlt < 1_000_000 ? `${(orb.apoAlt / 1000).toFixed(1)} km` : `${(orb.apoAlt / 1_000_000).toFixed(3)} Mm`],
-      ['Ecc', orb.ecc.toFixed(4)],
-      ['Per', orb.period === Infinity ? '∞' : this._fmtTime(orb.period)],
-      ['SMA', orb.sma    === Infinity ? '∞' : `${(orb.sma / 1000).toFixed(0)} km`],
-    ];
+    let title: string;
+    let rows: [string, string][];
+
+    const fmtAlt = (alt: number, label?: string) => {
+      if (alt < 0) return label ?? 'SUBORBITAL';
+      return alt < 1_000_000
+        ? `${(alt / 1000).toFixed(1)} km`
+        : `${(alt / 1_000_000).toFixed(3)} Mm`;
+    };
+
+    if (inSOI) {
+      const moonVel = getMoonVelocity(missionTime);
+      const relVel  = vec2.sub(rocket.body.vel, moonVel);
+      const orb     = computeOrbitalElements(relToMoon, relVel, MU_MOON, R_MOON);
+      const surfAlt = moonDist - R_MOON;
+
+      title = 'LUNAR ORBIT';
+      rows = [
+        ['Pe',  orb.periAlt < 0 ? 'IMPACT' : fmtAlt(orb.periAlt)],
+        ['Ap',  orb.apoAlt === Infinity ? 'ESCAPE' : fmtAlt(orb.apoAlt)],
+        ['Ecc', orb.ecc.toFixed(4)],
+        ['Per', orb.period === Infinity ? '∞' : this._fmtTime(orb.period)],
+        ['Alt', `${(surfAlt / 1000).toFixed(0)} km`],
+      ];
+    } else {
+      const orb = computeOrbitalElements(rocket.body.pos, rocket.body.vel);
+      title = 'ORBITAL DATA';
+      rows = [
+        ['Pe',  fmtAlt(orb.periAlt, 'SUBORBITAL')],
+        ['Ap',  orb.apoAlt === Infinity ? 'ESCAPE' : fmtAlt(orb.apoAlt)],
+        ['Ecc', orb.ecc.toFixed(4)],
+        ['Per', orb.period === Infinity ? '∞' : this._fmtTime(orb.period)],
+        ['SMA', orb.sma === Infinity ? '∞' : `${(orb.sma / 1000).toFixed(0)} km`],
+      ];
+    }
 
     const pw = 200, ph = rows.length * 22 + 36;
     const px = W - pw - 16, py = 60;
 
     ctx.fillStyle = 'rgba(8,14,24,0.88)';
-    this._roundRect(px, py, pw, ph, 6);
-    ctx.fill();
-    ctx.strokeStyle = THEME.panelBorder;
+    this._roundRect(px, py, pw, ph, 6); ctx.fill();
+    ctx.strokeStyle = inSOI ? 'rgba(80,200,170,0.6)' : THEME.panelBorder;
     ctx.lineWidth = 1;
-    this._roundRect(px, py, pw, ph, 6);
-    ctx.stroke();
+    this._roundRect(px, py, pw, ph, 6); ctx.stroke();
 
-    ctx.fillStyle = THEME.accent;
-    ctx.font = 'bold 11px Courier New';
-    ctx.textAlign = 'center';
-    ctx.fillText('ORBITAL DATA', px + pw / 2, py + 18);
+    ctx.fillStyle = inSOI ? 'rgba(80,220,180,1)' : THEME.accent;
+    ctx.font = 'bold 11px Courier New'; ctx.textAlign = 'center';
+    ctx.fillText(title, px + pw / 2, py + 18);
 
     rows.forEach(([k, v], i) => {
       const ry = py + 36 + i * 22;
-      ctx.fillStyle = THEME.textDim;
-      ctx.font = '10px Courier New';
-      ctx.textAlign = 'left';
+      ctx.fillStyle = THEME.textDim; ctx.font = '10px Courier New'; ctx.textAlign = 'left';
       ctx.fillText(k, px + 10, ry);
-      ctx.fillStyle = THEME.text;
+      const danger = (k === 'Pe' && v === 'IMPACT') || (k === 'Pe' && v === 'SUBORBITAL');
+      ctx.fillStyle = danger ? THEME.danger : THEME.text;
       ctx.textAlign = 'right';
       ctx.fillText(v, px + pw - 10, ry);
     });
@@ -879,13 +1089,13 @@ export class MapView {
     ctx.beginPath();
     ctx.moveTo(x + r, y);
     ctx.lineTo(x + w - r, y);
-    ctx.arcTo(x + w, y, x + w, y + r, r);
+    ctx.arcTo(x + w, y,     x + w, y + r,     r);
     ctx.lineTo(x + w, y + h - r);
     ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
     ctx.lineTo(x + r, y + h);
-    ctx.arcTo(x, y + h, x, y + h - r, r);
+    ctx.arcTo(x,     y + h, x,     y + h - r, r);
     ctx.lineTo(x, y + r);
-    ctx.arcTo(x, y, x + r, y, r);
+    ctx.arcTo(x,     y,     x + r, y,          r);
     ctx.closePath();
   }
 

@@ -12,7 +12,7 @@
  */
 
 import { THEME, PartType } from './types';
-import { PART_CATALOGUE, VAB_PALETTE } from './Part';
+import { PART_CATALOGUE, VAB_PALETTE, isEnginePart, isDecouplerPart } from './Part';
 import { Rocket } from './Rocket';
 import { Renderer } from './Renderer';
 
@@ -471,7 +471,7 @@ export class UI {
     ctx.fillText('VEHICLE STATS', infoX + 98, 28);
 
     const allEngineThrust = rocket.parts
-      .filter(p => p.def.type === PartType.ENGINE || p.def.type === PartType.ENGINE_VACUUM || p.def.type === PartType.SRB)
+      .filter(p => isEnginePart(p.def.type))
       .reduce((s, p) => s + p.def.maxThrust, 0);
     const stats: [string, string][] = [
       ['Parts',    `${rocket.parts.length}`],
@@ -689,11 +689,7 @@ export class UI {
 
     visualParts.forEach((part, i) => {
       const ry = listStartY + i * rowH;
-      const isInteractive =
-        part.def.type === PartType.ENGINE ||
-        part.def.type === PartType.ENGINE_VACUUM ||
-        part.def.type === PartType.SRB ||
-        part.def.type === PartType.DECOUPLER;
+      const isInteractive = isEnginePart(part.def.type) || isDecouplerPart(part.def.type);
 
       // Row background
       ctx.fillStyle = 'rgba(15,25,40,0.7)';

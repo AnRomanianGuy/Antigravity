@@ -23,10 +23,10 @@ import { MapView } from './MapView';
 
 // ─── Physics Config ───────────────────────────────────────────────────────────
 
-/** Fixed physics time step (seconds) */
+/** Fixed physics time step at normal warp (seconds) */
 const PHYSICS_DT = 1 / 60;
 
-/** Maximum physics sub-steps per render frame (prevents spiral of death) */
+/** Max sub-steps per frame at 1× warp */
 const MAX_PHYSICS_STEPS = 4;
 
 /** Throttle change rate per second (Shift/Ctrl keys) */
@@ -75,8 +75,10 @@ export class Game {
   private warpUpPressed   = false;
   private warpDownPressed = false;
 
-  /** Time warp: index into WARP_LEVELS */
-  private readonly WARP_LEVELS = [1, 2, 5, 10] as const;
+  /** Time warp: index into WARP_LEVELS.
+   *  ≤10×  → many small PHYSICS_DT steps per frame.
+   *  ≥100× → one large step (warpFactor/60 s) per frame; thrust disabled. */
+  private readonly WARP_LEVELS = [1, 5, 10, 100, 1000, 10000] as const;
   private warpIndex = 0;
 
   // ── Message overlay state ──────────────────────────────────────────────────
@@ -171,23 +173,32 @@ export class Game {
   }
 
   private _updateFlight(rawDt: number): void {
-    const warpFactor = this.WARP_LEVELS[this.warpIndex];
+    const warpFactor  = this.WARP_LEVELS[this.warpIndex];
+    const highWarp    = warpFactor >= 100;
 
     // ── Physics sub-steps ─────────────────────────────────────────────────
-    this.accumulator += rawDt * warpFactor;
-    const maxSteps = MAX_PHYSICS_STEPS * warpFactor;
-    let steps = 0;
-
-    while (this.accumulator >= PHYSICS_DT && steps < maxSteps) {
-      // Pass throttle into physics via getThrust override
+    // High warp: one large step per frame (thrust disabled for stability).
+    // Low warp:  many PHYSICS_DT steps drained from an accumulator.
+    if (highWarp) {
+      const bigDt = warpFactor / 60;
+      this.rocket.throttle = 0;          // no thrust during high warp
+      this.throttle        = 0;
       this.rocket.body.mass = this.rocket.getTotalMass();
-      this.physics.step(this.rocket.body, this.rocket, PHYSICS_DT);
-      this.accumulator -= PHYSICS_DT;
-      steps++;
-    }
-    // Discard leftover accumulator to prevent runaway
-    if (this.accumulator > PHYSICS_DT * maxSteps) {
-      this.accumulator = 0;
+      this.physics.step(this.rocket.body, this.rocket, bigDt);
+    } else {
+      this.accumulator += rawDt * warpFactor;
+      const maxSteps = MAX_PHYSICS_STEPS * warpFactor;
+      let steps = 0;
+
+      while (this.accumulator >= PHYSICS_DT && steps < maxSteps) {
+        this.rocket.body.mass = this.rocket.getTotalMass();
+        this.physics.step(this.rocket.body, this.rocket, PHYSICS_DT);
+        this.accumulator -= PHYSICS_DT;
+        steps++;
+      }
+      if (this.accumulator > PHYSICS_DT * maxSteps) {
+        this.accumulator = 0;
+      }
     }
 
     // ── Check mission events ──────────────────────────────────────────────

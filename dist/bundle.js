@@ -430,6 +430,28 @@
   var R_EARTH = 6371e3;
   var G0 = 9.80665;
   var MU_EARTH = G * M_EARTH;
+  var R_MOON = 1737e3;
+  var M_MOON = 7342e19;
+  var MU_MOON = G * M_MOON;
+  var MOON_ORBIT_RADIUS = 3844e5;
+  var MOON_SOI = 661e5;
+  var MOON_PERIOD = 2360592;
+  var MOON_PHASE_0 = Math.PI / 2;
+  var MOON_OMEGA = 2 * Math.PI / MOON_PERIOD;
+  function getMoonPosition(t) {
+    const angle = MOON_PHASE_0 + MOON_OMEGA * t;
+    return {
+      x: MOON_ORBIT_RADIUS * Math.cos(angle),
+      y: MOON_ORBIT_RADIUS * Math.sin(angle)
+    };
+  }
+  function getMoonVelocity(t) {
+    const angle = MOON_PHASE_0 + MOON_OMEGA * t;
+    return {
+      x: -MOON_ORBIT_RADIUS * MOON_OMEGA * Math.sin(angle),
+      y: MOON_ORBIT_RADIUS * MOON_OMEGA * Math.cos(angle)
+    };
+  }
   var REACTION_WHEEL_TORQUE = 2e5;
   var GIMBAL_TORQUE_COEFF = 6e4;
   var ANGULAR_DAMPING = 0.985;
@@ -481,8 +503,22 @@
         x: Math.sin(body.angle),
         y: Math.cos(body.angle)
       };
-      const gravMag = MU_EARTH / (r * r);
-      const gravForce = vec2.scale(radial, -gravMag * body.mass);
+      const moonPos = getMoonPosition(this.missionTime);
+      const relToMoon = { x: body.pos.x - moonPos.x, y: body.pos.y - moonPos.y };
+      const moonDist = Math.sqrt(relToMoon.x * relToMoon.x + relToMoon.y * relToMoon.y);
+      const inMoonSOI = moonDist < MOON_SOI && moonDist > 0;
+      let gravMag;
+      let gravForce;
+      if (inMoonSOI) {
+        gravMag = MU_MOON / (moonDist * moonDist);
+        gravForce = {
+          x: -(relToMoon.x / moonDist) * gravMag * body.mass,
+          y: -(relToMoon.y / moonDist) * gravMag * body.mass
+        };
+      } else {
+        gravMag = MU_EARTH / (r * r);
+        gravForce = vec2.scale(radial, -gravMag * body.mass);
+      }
       const pressure = this.atmo.getPressure(altitude);
       const vacFrac = Math.max(0, 1 - pressure / 101325);
       let thrustMag = 0;
@@ -2832,7 +2868,7 @@
       ctx.font = "bold 12px Courier New";
       ctx.textAlign = "center";
       ctx.fillText("VEHICLE STATS", infoX + 98, 28);
-      const allEngineThrust = rocket.parts.filter((p) => p.def.type === 3 /* ENGINE */ || p.def.type === 4 /* ENGINE_VACUUM */ || p.def.type === 8 /* SRB */).reduce((s, p) => s + p.def.maxThrust, 0);
+      const allEngineThrust = rocket.parts.filter((p) => isEnginePart(p.def.type)).reduce((s, p) => s + p.def.maxThrust, 0);
       const stats = [
         ["Parts", `${rocket.parts.length}`],
         ["Dry Mass", `${(rocket.parts.reduce((s, p) => s + p.def.dryMass, 0) / 1e3).toFixed(2)} t`],
@@ -3015,7 +3051,7 @@
       const STAGE_COLS = Renderer.STAGE_COLORS;
       visualParts.forEach((part, i) => {
         const ry = listStartY + i * rowH;
-        const isInteractive = part.def.type === 3 /* ENGINE */ || part.def.type === 4 /* ENGINE_VACUUM */ || part.def.type === 8 /* SRB */ || part.def.type === 5 /* DECOUPLER */;
+        const isInteractive = isEnginePart(part.def.type) || isDecouplerPart(part.def.type);
         ctx.fillStyle = "rgba(15,25,40,0.7)";
         roundRect(ctx, 15, ry + 2, leftW - 10, rowH - 4, 4);
         ctx.fill();
@@ -3207,56 +3243,52 @@
   };
 
   // src/MapView.ts
-  function computeOrbitalElements(pos, vel) {
+  function computeOrbitalElements(pos, vel, mu = MU_EARTH, bodyR = R_EARTH) {
     const r = vec2.length(pos);
     const v = vec2.length(vel);
-    const energy = v * v / 2 - MU_EARTH / r;
+    const energy = v * v / 2 - mu / r;
     if (energy >= 0) {
       return { sma: Infinity, ecc: 1, periAlt: -1, apoAlt: Infinity, period: Infinity };
     }
-    const sma = -MU_EARTH / (2 * energy);
+    const sma = -mu / (2 * energy);
     const h = pos.x * vel.y - pos.y * vel.x;
-    const ecc2 = 1 - h * h / (MU_EARTH * sma);
+    const ecc2 = 1 - h * h / (mu * sma);
     const ecc = Math.sqrt(Math.max(0, ecc2));
     const periR = sma * (1 - ecc);
     const apoR = sma * (1 + ecc);
-    const period = 2 * Math.PI * Math.sqrt(sma ** 3 / MU_EARTH);
-    return { sma, ecc, periAlt: periR - R_EARTH, apoAlt: apoR - R_EARTH, period };
+    const period = 2 * Math.PI * Math.sqrt(sma ** 3 / mu);
+    return { sma, ecc, periAlt: periR - bodyR, apoAlt: apoR - bodyR, period };
   }
   var HANDLE_R = 38;
   var DV_PER_PX = 10;
   var DV_VIS_PX = 0.1;
   var MapView = class {
     constructor(ctx, atmo) {
-      /** Base screen pixels per metre (Earth radius fills H * 0.20) */
       this.mpp = 1;
       this.userScale = 1;
       this.panX = 0;
       this.panY = 0;
-      // ── Pan drag state ────────────────────────────────────────────────────────
       this.isDragging = false;
       this.dragStartX = 0;
       this.dragStartY = 0;
-      /** True if the mouse moved enough during mousedown → suppress next click */
       this._didPan = false;
       // ── Maneuver node ─────────────────────────────────────────────────────────
-      /** Single active maneuver node (null = none placed) */
       this.node = null;
-      /** Index into cachedPath[] where the node sits */
       this._nodeIdx = 0;
       // ── Trajectory cache ──────────────────────────────────────────────────────
       this.cachedPath = [];
-      this.pathAge = 0;
       this.postNodePath = [];
-      // ── Screen-space hit-test targets (updated each render) ───────────────────
+      this.pathAge = 0;
+      // ── Encounter cache ───────────────────────────────────────────────────────
+      this._encounter = null;
+      this._postNodeEncounter = null;
+      // ── Screen-space hit-test targets ─────────────────────────────────────────
       this._nodeScreenPt = null;
       this._progHandle = null;
       this._retroHandle = null;
       this._normHandle = null;
       this._antinormHandle = null;
-      /** Prograde direction in screen space at node (world +Y → screen -Y) */
       this._progradeScreenDir = { x: 0, y: -1 };
-      /** Radial-out direction in screen space at node */
       this._radialScreenDir = { x: 1, y: 0 };
       // ── Handle drag state ─────────────────────────────────────────────────────
       this._dragging = null;
@@ -3278,23 +3310,38 @@
       ctx.fillStyle = "rgba(4,8,16,0.90)";
       ctx.fillRect(0, 0, W, H);
       this.mpp = R_EARTH / (H * 0.2);
-      this._drawGrid();
+      this._drawGrid(missionTime);
+      this._drawMoon(missionTime);
       this._drawEarth();
       this.pathAge++;
       if (this.pathAge > 60 || this.cachedPath.length === 0) {
         this.cachedPath = this._predictPath(rocket.body.pos, rocket.body.vel, missionTime, 600, 10);
+        this._encounter = this._findEncounter(this.cachedPath);
         this.pathAge = 0;
         if (this.node)
           this._recomputePostNode();
       }
-      this._drawTrajectory();
-      if (this.node && this.postNodePath.length > 1)
-        this._drawPostNodeTrajectory();
+      this._drawTrajectory(this.cachedPath, false);
+      if (this.node && this.postNodePath.length > 1) {
+        this._drawTrajectory(this.postNodePath, true);
+      }
       this._drawOrbMarkers(this.cachedPath);
+      if (this.node && this.postNodePath.length > 1) {
+        this._drawOrbMarkersPost(this.postNodePath);
+      }
+      if (this._encounter) {
+        this._drawEncounterMarker(this._encounter, this.cachedPath, missionTime, false);
+      }
+      if (this._postNodeEncounter) {
+        this._drawEncounterMarker(this._postNodeEncounter, this.postNodePath, missionTime, true);
+      }
       this._drawRocketMarker(rocket, wallTime);
       if (this.node)
         this._drawManeuverNode(missionTime);
-      this._drawOrbitalInfo(rocket);
+      this._drawOrbitalInfo(rocket, missionTime);
+      if (!this._encounter && !this._postNodeEncounter) {
+        this._drawTransferHints(rocket, missionTime);
+      }
       ctx.fillStyle = THEME.accent;
       ctx.font = "bold 14px Courier New";
       ctx.textAlign = "center";
@@ -3303,7 +3350,7 @@
       ctx.font = "11px Courier New";
       ctx.fillText("M \u2014 flight  |  Click trajectory \u2014 place node  |  Click node \u2014 delete", W / 2, 46);
     }
-    // ─── Trajectory Prediction ───────────────────────────────────────────────
+    // ─── Trajectory Prediction (patched conics) ───────────────────────────────
     _predictPath(startPos, startVel, startT, steps, dt) {
       const path = [];
       let pos = vec2.clone(startPos);
@@ -3312,38 +3359,52 @@
       let prevAngle = Math.atan2(pos.y, pos.x);
       let totalAngle = 0;
       for (let i = 0; i < steps; i++) {
-        path.push({ pos: vec2.clone(pos), vel: vec2.clone(vel), t });
+        const moonPos = getMoonPosition(t);
+        const dx = pos.x - moonPos.x;
+        const dy = pos.y - moonPos.y;
+        const moonDist = Math.sqrt(dx * dx + dy * dy);
+        const inSOI = moonDist < MOON_SOI && moonDist > 0;
+        path.push({ pos: vec2.clone(pos), vel: vec2.clone(vel), t, inMoonSOI: inSOI });
         const r = vec2.length(pos);
         if (r < R_EARTH)
           break;
-        const gMag = MU_EARTH / (r * r);
-        const gDir = vec2.scale(pos, -1 / r);
-        vel.x += gDir.x * gMag * dt;
-        vel.y += gDir.y * gMag * dt;
+        if (moonDist < R_MOON)
+          break;
+        if (inSOI) {
+          const gMag = MU_MOON / (moonDist * moonDist);
+          vel.x += -(dx / moonDist) * gMag * dt;
+          vel.y += -(dy / moonDist) * gMag * dt;
+        } else {
+          const gMag = MU_EARTH / (r * r);
+          vel.x += -(pos.x / r) * gMag * dt;
+          vel.y += -(pos.y / r) * gMag * dt;
+          const curAngle = Math.atan2(pos.y, pos.x);
+          let dA = curAngle - prevAngle;
+          if (dA > Math.PI)
+            dA -= 2 * Math.PI;
+          if (dA < -Math.PI)
+            dA += 2 * Math.PI;
+          totalAngle += Math.abs(dA);
+          prevAngle = curAngle;
+          if (i > 20 && totalAngle >= 2 * Math.PI)
+            break;
+        }
         pos.x += vel.x * dt;
         pos.y += vel.y * dt;
         t += dt;
-        const curAngle = Math.atan2(pos.y, pos.x);
-        let dA = curAngle - prevAngle;
-        if (dA > Math.PI)
-          dA -= 2 * Math.PI;
-        if (dA < -Math.PI)
-          dA += 2 * Math.PI;
-        totalAngle += Math.abs(dA);
-        prevAngle = curAngle;
-        if (i > 20 && totalAngle >= 2 * Math.PI)
-          break;
       }
       return path;
     }
     _recomputePostNode() {
       if (!this.node) {
         this.postNodePath = [];
+        this._postNodeEncounter = null;
         return;
       }
       const base = this.cachedPath[this._nodeIdx];
       if (!base) {
         this.postNodePath = [];
+        this._postNodeEncounter = null;
         return;
       }
       const prograde = vec2.normalize(base.vel);
@@ -3352,7 +3413,36 @@
         x: base.vel.x + this.node.progradeDV * prograde.x + this.node.normalDV * radialOut.x,
         y: base.vel.y + this.node.progradeDV * prograde.y + this.node.normalDV * radialOut.y
       };
-      this.postNodePath = this._predictPath(base.pos, newVel, base.t, 400, 10);
+      this.postNodePath = this._predictPath(base.pos, newVel, base.t, 600, 10);
+      this._postNodeEncounter = this._findEncounter(this.postNodePath);
+    }
+    // ─── Encounter Detection ──────────────────────────────────────────────────
+    _findEncounter(path) {
+      let entryIdx = -1;
+      let closestIdx = -1;
+      let minDist = Infinity;
+      for (let i = 0; i < path.length; i++) {
+        const pt = path[i];
+        if (!pt.inMoonSOI)
+          continue;
+        if (entryIdx === -1)
+          entryIdx = i;
+        const moonPos = getMoonPosition(pt.t);
+        const dist = vec2.length(vec2.sub(pt.pos, moonPos)) - R_MOON;
+        if (dist < minDist) {
+          minDist = dist;
+          closestIdx = i;
+        }
+      }
+      if (entryIdx === -1)
+        return null;
+      return {
+        entryIdx,
+        entryT: path[entryIdx].t,
+        closestIdx,
+        closestDistFromSurface: minDist,
+        isImpact: minDist < 0
+      };
     }
     // ─── Interaction ─────────────────────────────────────────────────────────
     handleClick(mx, my) {
@@ -3365,6 +3455,7 @@
         if (d < 14) {
           this.node = null;
           this.postNodePath = [];
+          this._postNodeEncounter = null;
           return true;
         }
       }
@@ -3448,12 +3539,14 @@
     }
     handleWheel(e) {
       const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
-      this.userScale = Math.max(0.25, Math.min(80, this.userScale * factor));
+      this.userScale = Math.max(5e-3, Math.min(80, this.userScale * factor));
     }
     resetView() {
       this.panX = 0;
       this.panY = 0;
-      this.userScale = 1;
+      const mppNow = R_EARTH / (this.H * 0.2);
+      const screenR = Math.min(this.W, this.H) * 0.38;
+      this.userScale = mppNow * screenR / MOON_ORBIT_RADIUS;
     }
     // ─── Drawing Helpers ──────────────────────────────────────────────────────
     get eMpp() {
@@ -3465,31 +3558,39 @@
         y: this.H / 2 - world.y / this.eMpp + this.panY
       };
     }
-    // ─── Draw Trajectory (base) ───────────────────────────────────────────────
-    _drawTrajectory() {
+    // ─── Draw Trajectory ──────────────────────────────────────────────────────
+    _drawTrajectory(path, isPlanned) {
       const ctx = this.ctx;
-      const path = this.cachedPath;
-      if (path.length < 2)
-        return;
       const n = path.length;
+      if (n < 2)
+        return;
       ctx.save();
       ctx.setLineDash([]);
       for (let i = 1; i < n; i++) {
         const frac = i / n;
-        const alpha = Math.max(0.1, 0.82 - frac * 0.72);
+        const alpha = Math.max(0.08, (isPlanned ? 0.8 : 0.82) - frac * 0.72);
         const s0 = this._w2s(path[i - 1].pos);
         const s1 = this._w2s(path[i].pos);
         if (s0.x < -300 && s1.x < -300)
           continue;
         if (s0.x > this.W + 300 && s1.x > this.W + 300)
           continue;
+        const inSOI = path[i].inMoonSOI;
         const alt = vec2.length(path[i].pos) - R_EARTH;
-        const inAtmo = this.atmo.isInAtmosphere(alt);
+        const inAtmo = !inSOI && this.atmo.isInAtmosphere(alt);
+        let color;
+        if (inSOI) {
+          color = isPlanned ? `rgba(100,255,200,${alpha.toFixed(2)})` : `rgba(60,220,160,${alpha.toFixed(2)})`;
+        } else if (inAtmo) {
+          color = isPlanned ? `rgba(255,200,80,${alpha.toFixed(2)})` : `rgba(255,150,50,${alpha.toFixed(2)})`;
+        } else {
+          color = isPlanned ? `rgba(255,210,0,${alpha.toFixed(2)})` : `rgba(0,210,255,${alpha.toFixed(2)})`;
+        }
         ctx.beginPath();
         ctx.moveTo(s0.x, s0.y);
         ctx.lineTo(s1.x, s1.y);
-        ctx.strokeStyle = inAtmo ? `rgba(255,150,50,${alpha.toFixed(2)})` : `rgba(0,210,255,${alpha.toFixed(2)})`;
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = isPlanned ? 2.5 : 2;
         ctx.stroke();
       }
       const step = Math.max(8, Math.floor(n / 10));
@@ -3500,20 +3601,15 @@
         const s0 = this._w2s(path[i].pos);
         const s1 = this._w2s(path[i + 1].pos);
         const dx = s1.x - s0.x, dy = s1.y - s0.y;
-        const segLen = Math.hypot(dx, dy);
-        if (segLen < 5)
+        if (Math.hypot(dx, dy) < 5)
           continue;
-        const ang = Math.atan2(dy, dx);
-        const cx = (s0.x + s1.x) / 2;
-        const cy = (s0.y + s1.y) / 2;
         const alpha = Math.max(0.15, 0.55 - frac * 0.4);
-        const alt = vec2.length(path[i].pos) - R_EARTH;
-        const inAtmo = this.atmo.isInAtmosphere(alt);
-        const color = inAtmo ? `rgba(255,170,70,${alpha.toFixed(2)})` : `rgba(0,220,255,${alpha.toFixed(2)})`;
+        const inSOI = path[i].inMoonSOI;
+        const arrowColor = inSOI ? `rgba(80,240,170,${alpha.toFixed(2)})` : isPlanned ? `rgba(255,220,60,${alpha.toFixed(2)})` : `rgba(0,220,255,${alpha.toFixed(2)})`;
         ctx.save();
-        ctx.translate(cx, cy);
-        ctx.rotate(ang);
-        ctx.fillStyle = color;
+        ctx.translate((s0.x + s1.x) / 2, (s0.y + s1.y) / 2);
+        ctx.rotate(Math.atan2(dy, dx));
+        ctx.fillStyle = arrowColor;
         ctx.beginPath();
         ctx.moveTo(6, 0);
         ctx.lineTo(-4, 3.5);
@@ -3525,7 +3621,7 @@
       }
       const last = path[path.length - 1];
       const lastAlt = vec2.length(last.pos) - R_EARTH;
-      if (lastAlt < 7e4) {
+      if (lastAlt < 7e4 && !last.inMoonSOI) {
         const sp = this._w2s(last.pos);
         ctx.beginPath();
         ctx.arc(sp.x, sp.y, 6, 0, Math.PI * 2);
@@ -3541,67 +3637,38 @@
         ctx.fillText("IMPACT", sp.x + 9, sp.y);
         ctx.textBaseline = "alphabetic";
       }
-      ctx.restore();
-    }
-    // ─── Draw Post-node Trajectory (yellow preview) ───────────────────────────
-    _drawPostNodeTrajectory() {
-      const ctx = this.ctx;
-      const path = this.postNodePath;
-      if (path.length < 2)
-        return;
-      const n = path.length;
-      ctx.save();
-      ctx.setLineDash([]);
-      for (let i = 1; i < n; i++) {
-        const frac = i / n;
-        const alpha = Math.max(0.08, 0.8 - frac * 0.72);
-        const s0 = this._w2s(path[i - 1].pos);
-        const s1 = this._w2s(path[i].pos);
-        if (s0.x < -300 && s1.x < -300)
-          continue;
-        if (s0.x > this.W + 300 && s1.x > this.W + 300)
-          continue;
-        ctx.beginPath();
-        ctx.moveTo(s0.x, s0.y);
-        ctx.lineTo(s1.x, s1.y);
-        ctx.strokeStyle = `rgba(255,210,0,${alpha.toFixed(2)})`;
-        ctx.lineWidth = 2.5;
-        ctx.stroke();
-      }
-      const step = Math.max(8, Math.floor(n / 10));
-      for (let i = step; i < n - 1; i += step) {
-        const frac = i / n;
-        if (frac > 0.88)
-          break;
-        const s0 = this._w2s(path[i].pos);
-        const s1 = this._w2s(path[i + 1].pos);
-        const dx = s1.x - s0.x, dy = s1.y - s0.y;
-        if (Math.hypot(dx, dy) < 5)
-          continue;
-        const alpha = Math.max(0.15, 0.55 - frac * 0.4);
-        ctx.save();
-        ctx.translate((s0.x + s1.x) / 2, (s0.y + s1.y) / 2);
-        ctx.rotate(Math.atan2(dy, dx));
-        ctx.fillStyle = `rgba(255,220,60,${alpha.toFixed(2)})`;
-        ctx.beginPath();
-        ctx.moveTo(6, 0);
-        ctx.lineTo(-4, 3.5);
-        ctx.lineTo(-2, 0);
-        ctx.lineTo(-4, -3.5);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
+      if (last.inMoonSOI) {
+        const moonPos = getMoonPosition(last.t);
+        const dist = vec2.length(vec2.sub(last.pos, moonPos));
+        if (dist < R_MOON * 1.05) {
+          const sp = this._w2s(last.pos);
+          ctx.beginPath();
+          ctx.arc(sp.x, sp.y, 6, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(200,120,0,0.9)";
+          ctx.fill();
+          ctx.strokeStyle = "#fff";
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+          ctx.fillStyle = THEME.warning;
+          ctx.font = "bold 10px Courier New";
+          ctx.textAlign = "left";
+          ctx.textBaseline = "middle";
+          ctx.fillText("LUNAR IMPACT", sp.x + 9, sp.y);
+          ctx.textBaseline = "alphabetic";
+        }
       }
       ctx.restore();
-      this._drawOrbMarkers(this.postNodePath, "#ffcc00", "#ffaa00");
     }
     // ─── Periapsis / Apoapsis markers ────────────────────────────────────────
-    _drawOrbMarkers(path, peColor = THEME.warning, apColor = THEME.accent) {
+    _drawOrbMarkers(path) {
       if (path.length < 2)
         return;
+      const earthPts = path.filter((p) => !p.inMoonSOI);
+      if (earthPts.length < 2)
+        return;
       let minR = Infinity, maxR = -Infinity;
-      let minPos = path[0].pos, maxPos = path[0].pos;
-      for (const pt of path) {
+      let minPos = earthPts[0].pos, maxPos = earthPts[0].pos;
+      for (const pt of earthPts) {
         const r = vec2.length(pt.pos);
         if (r < minR) {
           minR = r;
@@ -3612,8 +3679,30 @@
           maxPos = pt.pos;
         }
       }
-      this._drawOrbMarker(minPos, "Pe", peColor);
-      this._drawOrbMarker(maxPos, "Ap", apColor);
+      this._drawOrbMarker(minPos, "Pe", THEME.warning);
+      this._drawOrbMarker(maxPos, "Ap", THEME.accent);
+    }
+    _drawOrbMarkersPost(path) {
+      if (path.length < 2)
+        return;
+      const earthPts = path.filter((p) => !p.inMoonSOI);
+      if (earthPts.length < 2)
+        return;
+      let minR = Infinity, maxR = -Infinity;
+      let minPos = earthPts[0].pos, maxPos = earthPts[0].pos;
+      for (const pt of earthPts) {
+        const r = vec2.length(pt.pos);
+        if (r < minR) {
+          minR = r;
+          minPos = pt.pos;
+        }
+        if (r > maxR) {
+          maxR = r;
+          maxPos = pt.pos;
+        }
+      }
+      this._drawOrbMarker(minPos, "Pe", "#ffcc00");
+      this._drawOrbMarker(maxPos, "Ap", "#ffaa00");
     }
     _drawOrbMarker(worldPos, label, color) {
       const ctx = this.ctx;
@@ -3628,6 +3717,185 @@
       const alt = vec2.length(worldPos) - R_EARTH;
       const altStr = alt < 1e6 ? `${(alt / 1e3).toFixed(1)} km` : `${(alt / 1e6).toFixed(3)} Mm`;
       ctx.fillText(`${label}: ${altStr}`, sp.x + 8, sp.y - 4);
+    }
+    // ─── Moon Drawing ─────────────────────────────────────────────────────────
+    _drawMoon(missionTime) {
+      const ctx = this.ctx;
+      const moonWorld = getMoonPosition(missionTime);
+      const moonSP = this._w2s(moonWorld);
+      const earthSP = this._w2s({ x: 0, y: 0 });
+      const moonR = R_MOON / this.eMpp;
+      const soiR = MOON_SOI / this.eMpp;
+      const orbitR = MOON_ORBIT_RADIUS / this.eMpp;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(earthSP.x, earthSP.y, orbitR, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(100,100,140,0.22)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 14]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(moonSP.x, moonSP.y, Math.max(soiR, 4), 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(80,200,170,0.35)";
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([6, 8]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+      if (soiR > 10) {
+        ctx.fillStyle = "rgba(80,200,170,0.55)";
+        ctx.font = "9px Courier New";
+        ctx.textAlign = "right";
+        ctx.fillText("SOI", moonSP.x + soiR - 3, moonSP.y - 4);
+      }
+      const drawR = Math.max(moonR, 4);
+      const grad = ctx.createRadialGradient(
+        moonSP.x - drawR * 0.28,
+        moonSP.y - drawR * 0.28,
+        drawR * 0.04,
+        moonSP.x,
+        moonSP.y,
+        drawR
+      );
+      grad.addColorStop(0, "#d0d0d0");
+      grad.addColorStop(0.5, "#a0a0a0");
+      grad.addColorStop(1, "#585858");
+      ctx.beginPath();
+      ctx.arc(moonSP.x, moonSP.y, drawR, 0, Math.PI * 2);
+      ctx.fillStyle = grad;
+      ctx.fill();
+      ctx.strokeStyle = "rgba(200,200,220,0.25)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = "rgba(210,210,230,0.9)";
+      ctx.font = "bold 10px Courier New";
+      ctx.textAlign = "left";
+      ctx.fillText("MOON", moonSP.x + drawR + 5, moonSP.y + 4);
+    }
+    // ─── Encounter Marker ─────────────────────────────────────────────────────
+    _drawEncounterMarker(enc, path, missionTime, isPlanned) {
+      const ctx = this.ctx;
+      const pt = path[enc.entryIdx];
+      if (!pt)
+        return;
+      const sp = this._w2s(pt.pos);
+      const color = isPlanned ? "#ffdd00" : "#00ffcc";
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, 8, 0, Math.PI * 2);
+      ctx.fillStyle = color + "44";
+      ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+      const ca = path[enc.closestIdx];
+      if (ca) {
+        const caSP = this._w2s(ca.pos);
+        ctx.beginPath();
+        ctx.arc(caSP.x, caSP.y, 5, 0, Math.PI * 2);
+        ctx.fillStyle = enc.isImpact ? THEME.danger : color;
+        ctx.fill();
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+      const timeToEnc = enc.entryT - missionTime;
+      const distKm = Math.max(0, enc.closestDistFromSurface / 1e3).toFixed(0);
+      const status = enc.isImpact ? "IMPACT TRAJECTORY" : enc.closestDistFromSurface < 5e6 ? "LUNAR ORBIT POSSIBLE" : "LUNAR FLYBY";
+      const statusColor = enc.isImpact ? THEME.danger : enc.closestDistFromSurface < 5e6 ? THEME.success : THEME.warning;
+      const pw = 210, ph = 108;
+      let px = sp.x + 14;
+      if (px + pw > this.W - 10)
+        px = sp.x - pw - 14;
+      const py = Math.max(10, Math.min(this.H - ph - 10, sp.y - ph / 2));
+      ctx.fillStyle = "rgba(6,12,22,0.93)";
+      this._roundRect(px, py, pw, ph, 6);
+      ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      this._roundRect(px, py, pw, ph, 6);
+      ctx.stroke();
+      ctx.fillStyle = color;
+      ctx.font = "bold 11px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText(isPlanned ? "PLANNED ENCOUNTER" : "MOON ENCOUNTER", px + pw / 2, py + 16);
+      const rows = [
+        ["T\u2212", timeToEnc < 0 ? "PAST" : this._fmtTime(timeToEnc), THEME.text],
+        ["CA", `${distKm} km`, THEME.text],
+        ["", status, statusColor]
+      ];
+      rows.forEach(([k, v, c], i) => {
+        const ry = py + 32 + i * 22;
+        if (k) {
+          ctx.fillStyle = THEME.textDim;
+          ctx.font = "10px Courier New";
+          ctx.textAlign = "left";
+          ctx.fillText(k, px + 10, ry);
+        }
+        ctx.fillStyle = c;
+        ctx.font = k ? "10px Courier New" : "bold 10px Courier New";
+        ctx.textAlign = k ? "right" : "center";
+        ctx.fillText(v, k ? px + pw - 10 : px + pw / 2, ry);
+      });
+      ctx.fillStyle = THEME.textDim;
+      ctx.font = "9px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("[click node to delete]", px + pw / 2, py + ph - 6);
+    }
+    // ─── Transfer Hints ───────────────────────────────────────────────────────
+    _drawTransferHints(rocket, missionTime) {
+      const ctx = this.ctx;
+      const pos = rocket.body.pos;
+      const vel = rocket.body.vel;
+      const orb = computeOrbitalElements(pos, vel);
+      if (orb.periAlt < 0 || orb.apoAlt === Infinity)
+        return;
+      const moonPos = getMoonPosition(missionTime);
+      const moonOrbit = MOON_ORBIT_RADIUS - R_EARTH;
+      const apoAlt = orb.apoAlt;
+      const moonAngle = Math.atan2(moonPos.y, moonPos.x);
+      const rktAngle = Math.atan2(pos.y, pos.x);
+      let angleDiff = moonAngle - rktAngle;
+      while (angleDiff > Math.PI)
+        angleDiff -= 2 * Math.PI;
+      while (angleDiff < -Math.PI)
+        angleDiff += 2 * Math.PI;
+      const hints = [];
+      if (apoAlt < moonOrbit * 0.7) {
+        hints.push("\u25B2 BURN PROGRADE to raise Ap toward Moon orbit");
+      } else if (apoAlt >= moonOrbit * 0.7 && apoAlt <= moonOrbit * 1.4) {
+        if (angleDiff > 0.35) {
+          hints.push("\u21BB Moon is AHEAD \u2014 place node later or wait");
+        } else if (angleDiff < -0.35) {
+          hints.push("\u21BA Moon is BEHIND \u2014 place node earlier / burn now");
+        } else {
+          hints.push("\u2713 Ap near Moon orbit \u2014 add node at Pe to intercept");
+        }
+      } else if (apoAlt > moonOrbit * 1.4) {
+        hints.push("\u25BC Ap past Moon orbit \u2014 trim retrograde to match");
+      }
+      if (hints.length === 0)
+        return;
+      const pw = 340, ph = 14 + hints.length * 18 + 10;
+      const px = 16, py = this.H - ph - 60;
+      ctx.fillStyle = "rgba(6,12,22,0.85)";
+      this._roundRect(px, py, pw, ph, 6);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(60,140,220,0.4)";
+      ctx.lineWidth = 1;
+      this._roundRect(px, py, pw, ph, 6);
+      ctx.stroke();
+      ctx.fillStyle = THEME.accentDim;
+      ctx.font = "bold 9px Courier New";
+      ctx.textAlign = "left";
+      ctx.fillText("TRANSFER GUIDANCE", px + 10, py + 12);
+      hints.forEach((h, i) => {
+        ctx.fillStyle = THEME.text;
+        ctx.font = "10px Courier New";
+        ctx.fillText(h, px + 10, py + 26 + i * 18);
+      });
     }
     // ─── Maneuver Node Marker + Handles ──────────────────────────────────────
     _drawManeuverNode(missionTime) {
@@ -3787,23 +4055,25 @@
       ctx.fillStyle = earthGrad;
       ctx.fill();
     }
-    _drawGrid() {
+    _drawGrid(missionTime) {
       const ctx = this.ctx;
       const centre = this._w2s({ x: 0, y: 0 });
-      const altitudes = [1e5, 5e5, 1e6, 3e6, 1e7];
+      const moonOrbitAlt = MOON_ORBIT_RADIUS - R_EARTH;
+      const altitudes = [1e5, 5e5, 1e6, 3e6, 1e7, moonOrbitAlt];
       ctx.setLineDash([4, 8]);
       ctx.lineWidth = 0.5;
       ctx.textAlign = "left";
       ctx.font = "10px Courier New";
       for (const alt of altitudes) {
         const r = (R_EARTH + alt) / this.eMpp;
+        const isMoonOrbit = alt === moonOrbitAlt;
         ctx.beginPath();
         ctx.arc(centre.x, centre.y, r, 0, Math.PI * 2);
-        ctx.strokeStyle = "rgba(30,80,120,0.5)";
+        ctx.strokeStyle = isMoonOrbit ? "rgba(100,100,140,0.35)" : "rgba(30,80,120,0.5)";
         ctx.stroke();
         const labelX = centre.x + r + 4;
-        const labelStr = alt >= 1e6 ? `${(alt / 1e6).toFixed(0)} Mm` : `${(alt / 1e3).toFixed(0)} km`;
-        ctx.fillStyle = "rgba(60,110,160,0.8)";
+        const labelStr = alt >= 1e6 ? isMoonOrbit ? "Moon orbit" : `${(alt / 1e6).toFixed(0)} Mm` : `${(alt / 1e3).toFixed(0)} km`;
+        ctx.fillStyle = isMoonOrbit ? "rgba(120,120,160,0.7)" : "rgba(60,110,160,0.8)";
         ctx.fillText(labelStr, labelX, centre.y - 4);
       }
       ctx.setLineDash([]);
@@ -3838,37 +4108,65 @@
       ctx.fillText("\u25B2 Rocket", sp.x + 8, sp.y + 4);
     }
     // ─── Orbital Info Panel ───────────────────────────────────────────────────
-    _drawOrbitalInfo(rocket) {
+    _drawOrbitalInfo(rocket, missionTime) {
       const ctx = this.ctx;
       const { W } = this;
-      const orb = computeOrbitalElements(rocket.body.pos, rocket.body.vel);
-      const rows = [
-        ["Pe", orb.periAlt < 0 ? "SUBORBITAL" : orb.periAlt < 1e6 ? `${(orb.periAlt / 1e3).toFixed(1)} km` : `${(orb.periAlt / 1e6).toFixed(3)} Mm`],
-        ["Ap", orb.apoAlt === Infinity ? "ESCAPE" : orb.apoAlt < 1e6 ? `${(orb.apoAlt / 1e3).toFixed(1)} km` : `${(orb.apoAlt / 1e6).toFixed(3)} Mm`],
-        ["Ecc", orb.ecc.toFixed(4)],
-        ["Per", orb.period === Infinity ? "\u221E" : this._fmtTime(orb.period)],
-        ["SMA", orb.sma === Infinity ? "\u221E" : `${(orb.sma / 1e3).toFixed(0)} km`]
-      ];
+      const moonPos = getMoonPosition(missionTime);
+      const relToMoon = vec2.sub(rocket.body.pos, moonPos);
+      const moonDist = vec2.length(relToMoon);
+      const inSOI = moonDist < MOON_SOI;
+      let title;
+      let rows;
+      const fmtAlt = (alt, label) => {
+        if (alt < 0)
+          return label ?? "SUBORBITAL";
+        return alt < 1e6 ? `${(alt / 1e3).toFixed(1)} km` : `${(alt / 1e6).toFixed(3)} Mm`;
+      };
+      if (inSOI) {
+        const moonVel = getMoonVelocity(missionTime);
+        const relVel = vec2.sub(rocket.body.vel, moonVel);
+        const orb = computeOrbitalElements(relToMoon, relVel, MU_MOON, R_MOON);
+        const surfAlt = moonDist - R_MOON;
+        title = "LUNAR ORBIT";
+        rows = [
+          ["Pe", orb.periAlt < 0 ? "IMPACT" : fmtAlt(orb.periAlt)],
+          ["Ap", orb.apoAlt === Infinity ? "ESCAPE" : fmtAlt(orb.apoAlt)],
+          ["Ecc", orb.ecc.toFixed(4)],
+          ["Per", orb.period === Infinity ? "\u221E" : this._fmtTime(orb.period)],
+          ["Alt", `${(surfAlt / 1e3).toFixed(0)} km`]
+        ];
+      } else {
+        const orb = computeOrbitalElements(rocket.body.pos, rocket.body.vel);
+        title = "ORBITAL DATA";
+        rows = [
+          ["Pe", fmtAlt(orb.periAlt, "SUBORBITAL")],
+          ["Ap", orb.apoAlt === Infinity ? "ESCAPE" : fmtAlt(orb.apoAlt)],
+          ["Ecc", orb.ecc.toFixed(4)],
+          ["Per", orb.period === Infinity ? "\u221E" : this._fmtTime(orb.period)],
+          ["SMA", orb.sma === Infinity ? "\u221E" : `${(orb.sma / 1e3).toFixed(0)} km`]
+        ];
+      }
       const pw = 200, ph = rows.length * 22 + 36;
       const px = W - pw - 16, py = 60;
       ctx.fillStyle = "rgba(8,14,24,0.88)";
       this._roundRect(px, py, pw, ph, 6);
       ctx.fill();
-      ctx.strokeStyle = THEME.panelBorder;
+      ctx.strokeStyle = inSOI ? "rgba(80,200,170,0.6)" : THEME.panelBorder;
       ctx.lineWidth = 1;
       this._roundRect(px, py, pw, ph, 6);
       ctx.stroke();
-      ctx.fillStyle = THEME.accent;
+      ctx.fillStyle = inSOI ? "rgba(80,220,180,1)" : THEME.accent;
       ctx.font = "bold 11px Courier New";
       ctx.textAlign = "center";
-      ctx.fillText("ORBITAL DATA", px + pw / 2, py + 18);
+      ctx.fillText(title, px + pw / 2, py + 18);
       rows.forEach(([k, v], i) => {
         const ry = py + 36 + i * 22;
         ctx.fillStyle = THEME.textDim;
         ctx.font = "10px Courier New";
         ctx.textAlign = "left";
         ctx.fillText(k, px + 10, ry);
-        ctx.fillStyle = THEME.text;
+        const danger = k === "Pe" && v === "IMPACT" || k === "Pe" && v === "SUBORBITAL";
+        ctx.fillStyle = danger ? THEME.danger : THEME.text;
         ctx.textAlign = "right";
         ctx.fillText(v, px + pw - 10, ry);
       });
@@ -3929,8 +4227,10 @@
       this.escPressed = false;
       this.warpUpPressed = false;
       this.warpDownPressed = false;
-      /** Time warp: index into WARP_LEVELS */
-      this.WARP_LEVELS = [1, 2, 5, 10];
+      /** Time warp: index into WARP_LEVELS.
+       *  ≤10×  → many small PHYSICS_DT steps per frame.
+       *  ≥100× → one large step (warpFactor/60 s) per frame; thrust disabled. */
+      this.WARP_LEVELS = [1, 5, 10, 100, 1e3, 1e4];
       this.warpIndex = 0;
       // ── Message overlay state ──────────────────────────────────────────────────
       this.showMessage = false;
@@ -4018,17 +4318,26 @@
     }
     _updateFlight(rawDt) {
       const warpFactor = this.WARP_LEVELS[this.warpIndex];
-      this.accumulator += rawDt * warpFactor;
-      const maxSteps = MAX_PHYSICS_STEPS * warpFactor;
-      let steps = 0;
-      while (this.accumulator >= PHYSICS_DT && steps < maxSteps) {
+      const highWarp = warpFactor >= 100;
+      if (highWarp) {
+        const bigDt = warpFactor / 60;
+        this.rocket.throttle = 0;
+        this.throttle = 0;
         this.rocket.body.mass = this.rocket.getTotalMass();
-        this.physics.step(this.rocket.body, this.rocket, PHYSICS_DT);
-        this.accumulator -= PHYSICS_DT;
-        steps++;
-      }
-      if (this.accumulator > PHYSICS_DT * maxSteps) {
-        this.accumulator = 0;
+        this.physics.step(this.rocket.body, this.rocket, bigDt);
+      } else {
+        this.accumulator += rawDt * warpFactor;
+        const maxSteps = MAX_PHYSICS_STEPS * warpFactor;
+        let steps = 0;
+        while (this.accumulator >= PHYSICS_DT && steps < maxSteps) {
+          this.rocket.body.mass = this.rocket.getTotalMass();
+          this.physics.step(this.rocket.body, this.rocket, PHYSICS_DT);
+          this.accumulator -= PHYSICS_DT;
+          steps++;
+        }
+        if (this.accumulator > PHYSICS_DT * maxSteps) {
+          this.accumulator = 0;
+        }
       }
       this._checkFlightEvents();
       const frame = this.physics.lastFrame;

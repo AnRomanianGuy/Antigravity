@@ -42,6 +42,37 @@ export const G0 = 9.80665;
 /** μ = G·M — gravitational parameter, precomputed for efficiency */
 export const MU_EARTH = G * M_EARTH;   // ≈ 3.986e14 m³/s²
 
+// ─── Moon Constants ───────────────────────────────────────────────────────────
+
+export const R_MOON            = 1_737_000;    // Moon radius (m)
+export const M_MOON            = 7.342e22;     // Moon mass (kg)
+export const MU_MOON           = G * M_MOON;   // ≈ 4.905e12 m³/s²
+export const MOON_ORBIT_RADIUS = 384_400_000;  // Semi-major axis (m) ~384,400 km
+export const MOON_SOI          =  66_100_000;  // Sphere of influence radius (m) ~66,100 km
+export const MOON_PERIOD       =  2_360_592;   // Sidereal period (s) ≈ 27.32 days
+
+/** Moon starts directly above launch site (+Y direction) at t = 0 */
+const MOON_PHASE_0 = Math.PI / 2;
+const MOON_OMEGA   = 2 * Math.PI / MOON_PERIOD;
+
+/** World-space position of the Moon at mission time t (seconds) */
+export function getMoonPosition(t: number): Vec2 {
+  const angle = MOON_PHASE_0 + MOON_OMEGA * t;
+  return {
+    x: MOON_ORBIT_RADIUS * Math.cos(angle),
+    y: MOON_ORBIT_RADIUS * Math.sin(angle),
+  };
+}
+
+/** World-space velocity of the Moon at mission time t */
+export function getMoonVelocity(t: number): Vec2 {
+  const angle = MOON_PHASE_0 + MOON_OMEGA * t;
+  return {
+    x: -MOON_ORBIT_RADIUS * MOON_OMEGA * Math.sin(angle),
+    y:  MOON_ORBIT_RADIUS * MOON_OMEGA * Math.cos(angle),
+  };
+}
+
 /** Reaction wheel max torque (N·m) — from command pod SAS */
 const REACTION_WHEEL_TORQUE = 200_000;
 
@@ -147,10 +178,25 @@ export class PhysicsEngine {
       y:  Math.cos(body.angle),
     };
 
-    // ── Gravity ─────────────────────────────────────────────────────────────
-    // F_grav = −(μ / r²) · m · r̂   (always toward Earth centre)
-    const gravMag = MU_EARTH / (r * r);
-    const gravForce: Vec2 = vec2.scale(radial, -gravMag * body.mass);
+    // ── Gravity (patched conics) ─────────────────────────────────────────────
+    // Inside Moon SOI → Moon gravity only.  Outside → Earth gravity only.
+    const moonPos    = getMoonPosition(this.missionTime);
+    const relToMoon  = { x: body.pos.x - moonPos.x, y: body.pos.y - moonPos.y };
+    const moonDist   = Math.sqrt(relToMoon.x * relToMoon.x + relToMoon.y * relToMoon.y);
+    const inMoonSOI  = moonDist < MOON_SOI && moonDist > 0;
+
+    let gravMag: number;
+    let gravForce: Vec2;
+    if (inMoonSOI) {
+      gravMag   = MU_MOON / (moonDist * moonDist);
+      gravForce = {
+        x: -(relToMoon.x / moonDist) * gravMag * body.mass,
+        y: -(relToMoon.y / moonDist) * gravMag * body.mass,
+      };
+    } else {
+      gravMag   = MU_EARTH / (r * r);
+      gravForce = vec2.scale(radial, -gravMag * body.mass);
+    }
 
     // ── Thrust (atmospheric-corrected) ──────────────────────────────────────
     // vacFrac = 0 at sea level, 1 in vacuum.  Isp and thrust both interpolate
