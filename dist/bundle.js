@@ -3020,7 +3020,7 @@
       this._drawEarth();
       this.pathAge++;
       if (this.pathAge > 60 || this.cachedPath.length === 0) {
-        this.cachedPath = this._predictPath(rocket.body.pos, rocket.body.vel, missionTime, 300, 20);
+        this.cachedPath = this._predictPath(rocket.body.pos, rocket.body.vel, missionTime, 600, 10);
         this.pathAge = 0;
         if (this.node)
           this._recomputePostNode();
@@ -3047,6 +3047,8 @@
       let pos = vec2.clone(startPos);
       let vel = vec2.clone(startVel);
       let t = startT;
+      let prevAngle = Math.atan2(pos.y, pos.x);
+      let totalAngle = 0;
       for (let i = 0; i < steps; i++) {
         path.push({ pos: vec2.clone(pos), vel: vec2.clone(vel), t });
         const r = vec2.length(pos);
@@ -3059,6 +3061,16 @@
         pos.x += vel.x * dt;
         pos.y += vel.y * dt;
         t += dt;
+        const curAngle = Math.atan2(pos.y, pos.x);
+        let dA = curAngle - prevAngle;
+        if (dA > Math.PI)
+          dA -= 2 * Math.PI;
+        if (dA < -Math.PI)
+          dA += 2 * Math.PI;
+        totalAngle += Math.abs(dA);
+        prevAngle = curAngle;
+        if (i > 20 && totalAngle >= 2 * Math.PI)
+          break;
       }
       return path;
     }
@@ -3078,7 +3090,7 @@
         x: base.vel.x + this.node.progradeDV * prograde.x + this.node.normalDV * radialOut.x,
         y: base.vel.y + this.node.progradeDV * prograde.y + this.node.normalDV * radialOut.y
       };
-      this.postNodePath = this._predictPath(base.pos, newVel, base.t, 200, 20);
+      this.postNodePath = this._predictPath(base.pos, newVel, base.t, 400, 10);
     }
     // ─── Interaction ─────────────────────────────────────────────────────────
     handleClick(mx, my) {
@@ -3197,19 +3209,77 @@
       const path = this.cachedPath;
       if (path.length < 2)
         return;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 6]);
-      for (let i = 1; i < path.length; i++) {
+      const n = path.length;
+      ctx.save();
+      ctx.setLineDash([]);
+      for (let i = 1; i < n; i++) {
+        const frac = i / n;
+        const alpha = Math.max(0.1, 0.82 - frac * 0.72);
         const s0 = this._w2s(path[i - 1].pos);
         const s1 = this._w2s(path[i].pos);
+        if (s0.x < -300 && s1.x < -300)
+          continue;
+        if (s0.x > this.W + 300 && s1.x > this.W + 300)
+          continue;
         const alt = vec2.length(path[i].pos) - R_EARTH;
-        ctx.strokeStyle = this.atmo.isInAtmosphere(alt) ? "rgba(255,140,40,0.50)" : "rgba(0,200,255,0.40)";
+        const inAtmo = this.atmo.isInAtmosphere(alt);
         ctx.beginPath();
         ctx.moveTo(s0.x, s0.y);
         ctx.lineTo(s1.x, s1.y);
+        ctx.strokeStyle = inAtmo ? `rgba(255,150,50,${alpha.toFixed(2)})` : `rgba(0,210,255,${alpha.toFixed(2)})`;
+        ctx.lineWidth = 2;
         ctx.stroke();
       }
-      ctx.setLineDash([]);
+      const step = Math.max(8, Math.floor(n / 10));
+      for (let i = step; i < n - 1; i += step) {
+        const frac = i / n;
+        if (frac > 0.88)
+          break;
+        const s0 = this._w2s(path[i].pos);
+        const s1 = this._w2s(path[i + 1].pos);
+        const dx = s1.x - s0.x, dy = s1.y - s0.y;
+        const segLen = Math.hypot(dx, dy);
+        if (segLen < 5)
+          continue;
+        const ang = Math.atan2(dy, dx);
+        const cx = (s0.x + s1.x) / 2;
+        const cy = (s0.y + s1.y) / 2;
+        const alpha = Math.max(0.15, 0.55 - frac * 0.4);
+        const alt = vec2.length(path[i].pos) - R_EARTH;
+        const inAtmo = this.atmo.isInAtmosphere(alt);
+        const color = inAtmo ? `rgba(255,170,70,${alpha.toFixed(2)})` : `rgba(0,220,255,${alpha.toFixed(2)})`;
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(ang);
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(6, 0);
+        ctx.lineTo(-4, 3.5);
+        ctx.lineTo(-2, 0);
+        ctx.lineTo(-4, -3.5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+      const last = path[path.length - 1];
+      const lastAlt = vec2.length(last.pos) - R_EARTH;
+      if (lastAlt < 7e4) {
+        const sp = this._w2s(last.pos);
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, 6, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(255,80,0,0.85)";
+        ctx.fill();
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.fillStyle = THEME.danger;
+        ctx.font = "bold 10px Courier New";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.fillText("IMPACT", sp.x + 9, sp.y);
+        ctx.textBaseline = "alphabetic";
+      }
+      ctx.restore();
     }
     // ─── Draw Post-node Trajectory (yellow preview) ───────────────────────────
     _drawPostNodeTrajectory() {
@@ -3217,18 +3287,50 @@
       const path = this.postNodePath;
       if (path.length < 2)
         return;
-      ctx.lineWidth = 2;
-      ctx.setLineDash([5, 5]);
-      ctx.strokeStyle = "rgba(255,200,0,0.70)";
-      ctx.beginPath();
-      const s0 = this._w2s(path[0].pos);
-      ctx.moveTo(s0.x, s0.y);
-      for (let i = 1; i < path.length; i++) {
-        const s = this._w2s(path[i].pos);
-        ctx.lineTo(s.x, s.y);
-      }
-      ctx.stroke();
+      const n = path.length;
+      ctx.save();
       ctx.setLineDash([]);
+      for (let i = 1; i < n; i++) {
+        const frac = i / n;
+        const alpha = Math.max(0.08, 0.8 - frac * 0.72);
+        const s0 = this._w2s(path[i - 1].pos);
+        const s1 = this._w2s(path[i].pos);
+        if (s0.x < -300 && s1.x < -300)
+          continue;
+        if (s0.x > this.W + 300 && s1.x > this.W + 300)
+          continue;
+        ctx.beginPath();
+        ctx.moveTo(s0.x, s0.y);
+        ctx.lineTo(s1.x, s1.y);
+        ctx.strokeStyle = `rgba(255,210,0,${alpha.toFixed(2)})`;
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+      }
+      const step = Math.max(8, Math.floor(n / 10));
+      for (let i = step; i < n - 1; i += step) {
+        const frac = i / n;
+        if (frac > 0.88)
+          break;
+        const s0 = this._w2s(path[i].pos);
+        const s1 = this._w2s(path[i + 1].pos);
+        const dx = s1.x - s0.x, dy = s1.y - s0.y;
+        if (Math.hypot(dx, dy) < 5)
+          continue;
+        const alpha = Math.max(0.15, 0.55 - frac * 0.4);
+        ctx.save();
+        ctx.translate((s0.x + s1.x) / 2, (s0.y + s1.y) / 2);
+        ctx.rotate(Math.atan2(dy, dx));
+        ctx.fillStyle = `rgba(255,220,60,${alpha.toFixed(2)})`;
+        ctx.beginPath();
+        ctx.moveTo(6, 0);
+        ctx.lineTo(-4, 3.5);
+        ctx.lineTo(-2, 0);
+        ctx.lineTo(-4, -3.5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+      ctx.restore();
       this._drawOrbMarkers(this.postNodePath, "#ffcc00", "#ffaa00");
     }
     // ─── Periapsis / Apoapsis markers ────────────────────────────────────────
