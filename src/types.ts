@@ -117,13 +117,15 @@ export interface StageData {
   partIds: string[];
 }
 
-// ─── Maneuver Node (stub — ready for future implementation) ───────────────────
+// ─── Maneuver Node ────────────────────────────────────────────────────────────
 
 export interface ManeuverNode {
   /** Mission elapsed time in seconds when this node fires */
   time: number;
-  /** Delta-V vector in world space (m/s) */
-  deltaV: Vec2;
+  /** Delta-V in prograde direction (m/s). Positive = accelerate. */
+  progradeDV: number;
+  /** Delta-V in radial-outward direction (m/s). Positive = away from Earth. */
+  normalDV: number;
   /** Whether this node has been executed */
   executed: boolean;
 }
