@@ -49,7 +49,7 @@ Then open `http://localhost:5173`.
 - [x] Heating and reentry
 - [x] Map view (AP/PE, trajectory)
 - [x] Maneuver nodes
-- [ ] Second gravity body (Moon)
+- [ ] Second gravity body (Moon,WIP)
 - [ ] Orbital transfer planning
 - [ ] Landing system
 - [ ] Advanced telemetry UI
