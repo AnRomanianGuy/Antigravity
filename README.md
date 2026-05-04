@@ -82,7 +82,7 @@ Build your rocket, launch from Earth, and try to:
 - [x] Atmospheric simulation
 - [x] Heating & reentry effects
 - [x] Map view with AP/PE
-- [ ] Maneuver nodes
+- [x] Maneuver nodes
 - [ ] Moon (second gravity body)
 - [ ] Orbital transfers
 - [ ] Landing system
