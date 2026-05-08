@@ -231,10 +231,10 @@ export class Game {
 
     if (this.isMapOpen) {
       // Render flight behind map
-      this.renderer.renderFlight(this.rocket, frame, this.throttle);
+      this.renderer.renderFlight(this.rocket, frame, this.throttle, this.physics.missionTime);
       this.mapView.render(this.rocket, this.wallTime, this.physics.missionTime, () => { this.isMapOpen = false; });
     } else {
-      this.renderer.renderFlight(this.rocket, frame, this.throttle);
+      this.renderer.renderFlight(this.rocket, frame, this.throttle, this.physics.missionTime);
       this.renderer.renderHUD(
         this.rocket,
         frame,
@@ -682,7 +682,10 @@ export class Game {
     this.rocket.body.vel    = { x: v,  y: 0 };
     this.rocket.body.angle  = 0;
     this.rocket.body.angVel = 0;
+    this.rocket.body.mass   = this.rocket.getTotalMass();
     this.rocket.hasLaunched = true;
+    this.rocket.isDestroyed = false;
+    this.accumulator        = 0;
     this.isMapOpen          = false;
     this.warpIndex          = 0;
     this._switchTo(GameScreen.FLIGHT);
@@ -700,7 +703,10 @@ export class Game {
     this.rocket.body.vel    = { x: moonVel.x + v, y: moonVel.y      };
     this.rocket.body.angle  = 0;
     this.rocket.body.angVel = 0;
+    this.rocket.body.mass   = this.rocket.getTotalMass();
     this.rocket.hasLaunched = true;
+    this.rocket.isDestroyed = false;
+    this.accumulator        = 0;
     this.isMapOpen          = false;
     this.warpIndex          = 0;
     this._switchTo(GameScreen.FLIGHT);

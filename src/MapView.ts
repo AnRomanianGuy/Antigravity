@@ -154,7 +154,14 @@ export class MapView {
     // Refresh trajectory every 60 frames
     this.pathAge++;
     if (this.pathAge > 60 || this.cachedPath.length === 0) {
-      this.cachedPath  = this._predictPath(rocket.body.pos, rocket.body.vel, missionTime, 600, 10);
+      // Use finer dt inside Moon SOI so the lunar orbit doesn't drift
+      const moonPosCurr  = getMoonPosition(missionTime);
+      const moonDistCurr = vec2.length(vec2.sub(rocket.body.pos, moonPosCurr));
+      const rocketInSOI  = moonDistCurr < MOON_SOI;
+      const predDt       = rocketInSOI ? 4   : 10;    // 4 s steps inside SOI, 10 s outside
+      const predSteps    = rocketInSOI ? 2200 : 1400; // >1 Moon orbit, or up to ~14 000 s Earth orbit
+
+      this.cachedPath  = this._predictPath(rocket.body.pos, rocket.body.vel, missionTime, predSteps, predDt);
       this._encounter  = this._findEncounter(this.cachedPath);
       this.pathAge     = 0;
       if (this.node) this._recomputePostNode();
@@ -211,6 +218,10 @@ export class MapView {
     let prevAngle  = Math.atan2(pos.y, pos.x);
     let totalAngle = 0;
 
+    // Moon-relative orbit angle tracking — terminates after one full Moon orbit
+    let moonPrevAngle  = NaN;
+    let moonOrbitAngle = 0;
+
     for (let i = 0; i < steps; i++) {
       // Moon state at this integration time
       const moonPos  = getMoonPosition(t);
@@ -227,10 +238,23 @@ export class MapView {
 
       // Patched-conic gravity: only one body at a time
       if (inSOI) {
+        // Track Moon-centred orbit angle; terminate after ~1 full orbit
+        const moonRelAngle = Math.atan2(dy, dx);
+        if (!isNaN(moonPrevAngle)) {
+          let dA = moonRelAngle - moonPrevAngle;
+          if (dA >  Math.PI) dA -= 2 * Math.PI;
+          if (dA < -Math.PI) dA += 2 * Math.PI;
+          moonOrbitAngle += Math.abs(dA);
+          if (i > 10 && moonOrbitAngle >= 2 * Math.PI * 1.05) break;
+        }
+        moonPrevAngle = moonRelAngle;
+
         const gMag = MU_MOON / (moonDist * moonDist);
         vel.x += -(dx / moonDist) * gMag * dt;
         vel.y += -(dy / moonDist) * gMag * dt;
       } else {
+        moonPrevAngle = NaN;   // reset Moon-angle tracker when outside SOI
+
         const gMag = MU_EARTH / (r * r);
         vel.x += -(pos.x / r) * gMag * dt;
         vel.y += -(pos.y / r) * gMag * dt;
@@ -242,7 +266,7 @@ export class MapView {
         if (dA < -Math.PI) dA += 2 * Math.PI;
         totalAngle += Math.abs(dA);
         prevAngle   = curAngle;
-        if (i > 20 && totalAngle >= 2 * Math.PI) break;
+        if (i > 20 && totalAngle >= 2 * Math.PI * 1.02) break;  // slight overshoot so path closes
       }
 
       pos.x += vel.x * dt;
@@ -267,7 +291,11 @@ export class MapView {
       y: base.vel.y + this.node.progradeDV * prograde.y + this.node.normalDV * radialOut.y,
     };
 
-    this.postNodePath        = this._predictPath(base.pos, newVel, base.t, 600, 10);
+    const moonPosBase = getMoonPosition(base.t);
+    const baseInSOI   = vec2.length(vec2.sub(base.pos, moonPosBase)) < MOON_SOI;
+    const pnDt        = baseInSOI ? 4    : 10;
+    const pnSteps     = baseInSOI ? 2200 : 1400;
+    this.postNodePath        = this._predictPath(base.pos, newVel, base.t, pnSteps, pnDt);
     this._postNodeEncounter  = this._findEncounter(this.postNodePath);
   }
 
@@ -290,6 +318,8 @@ export class MapView {
     }
 
     if (entryIdx === -1) return null;
+    // Already in SOI at trajectory start — this is current orbital state, not a future encounter
+    if (entryIdx === 0) return null;
 
     return {
       entryIdx,
@@ -543,10 +573,26 @@ export class MapView {
 
   private _drawOrbMarkers(path: TrajPoint[]): void {
     if (path.length < 2) return;
-    // Only use Earth-relative (non-SOI) points
-    const earthPts = path.filter(p => !p.inMoonSOI);
-    if (earthPts.length < 2) return;
 
+    const soiPts   = path.filter(p =>  p.inMoonSOI);
+    const earthPts = path.filter(p => !p.inMoonSOI);
+
+    // Moon-relative Pe/Ap when majority of path is in Moon SOI
+    if (soiPts.length > earthPts.length && soiPts.length > 4) {
+      let minD = Infinity, maxD = -Infinity;
+      let minPos = soiPts[0].pos, maxPos = soiPts[0].pos;
+      for (const pt of soiPts) {
+        const moonPt = getMoonPosition(pt.t);
+        const d = vec2.length(vec2.sub(pt.pos, moonPt));
+        if (d < minD) { minD = d; minPos = pt.pos; }
+        if (d > maxD) { maxD = d; maxPos = pt.pos; }
+      }
+      this._drawOrbMarkerMoon(minPos, 'Pe', THEME.warning, soiPts[0].t);
+      this._drawOrbMarkerMoon(maxPos, 'Ap', THEME.accent,  soiPts[0].t);
+      return;
+    }
+
+    if (earthPts.length < 2) return;
     let minR = Infinity, maxR = -Infinity;
     let minPos = earthPts[0].pos, maxPos = earthPts[0].pos;
     for (const pt of earthPts) {
@@ -588,6 +634,27 @@ export class MapView {
     ctx.textAlign = 'left';
     const alt    = vec2.length(worldPos) - R_EARTH;
     const altStr = alt < 1_000_000
+      ? `${(alt / 1000).toFixed(1)} km`
+      : `${(alt / 1_000_000).toFixed(3)} Mm`;
+    ctx.fillText(`${label}: ${altStr}`, sp.x + 8, sp.y - 4);
+  }
+
+  /** Same as _drawOrbMarker but shows Moon-relative altitude */
+  private _drawOrbMarkerMoon(worldPos: Vec2, label: string, color: string, t: number): void {
+    const ctx     = this.ctx;
+    const sp      = this._w2s(worldPos);
+    const moonPos = getMoonPosition(t);
+    const alt     = vec2.length(vec2.sub(worldPos, moonPos)) - R_MOON;
+
+    ctx.beginPath();
+    ctx.arc(sp.x, sp.y, 5, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+
+    ctx.fillStyle = color;
+    ctx.font = 'bold 11px Courier New';
+    ctx.textAlign = 'left';
+    const altStr = alt < 0 ? 'SURFACE' : alt < 1_000_000
       ? `${(alt / 1000).toFixed(1)} km`
       : `${(alt / 1_000_000).toFixed(3)} Mm`;
     ctx.fillText(`${label}: ${altStr}`, sp.x + 8, sp.y - 4);
@@ -748,7 +815,12 @@ export class MapView {
     const ctx     = this.ctx;
     const pos     = rocket.body.pos;
     const vel     = rocket.body.vel;
-    const orb     = computeOrbitalElements(pos, vel);
+
+    // Skip transfer hints when already inside Moon SOI
+    const moonPosTH = getMoonPosition(missionTime);
+    if (vec2.length(vec2.sub(pos, moonPosTH)) < MOON_SOI) return;
+
+    const orb = computeOrbitalElements(pos, vel);
 
     // Only meaningful when in orbit (not suborbital, not escaped)
     if (orb.periAlt < 0 || orb.apoAlt === Infinity) return;

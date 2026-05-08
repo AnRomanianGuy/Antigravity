@@ -18,7 +18,7 @@
 
 import { vec2, Vec2, THEME, PartType } from './types';
 import { Rocket } from './Rocket';
-import { PhysicsFrame, R_EARTH, MAX_HEAT_FLUX } from './Physics';
+import { PhysicsFrame, R_EARTH, R_MOON, getMoonPosition, MAX_HEAT_FLUX } from './Physics';
 
 // ─── Star Catalogue (generated once) ──────────────────────────────────────────
 
@@ -83,14 +83,14 @@ export class Renderer {
    * @param frame       Latest physics frame data
    * @param throttle    Current throttle 0–1
    */
-  renderFlight(rocket: Rocket, frame: PhysicsFrame, throttle: number): void {
+  renderFlight(rocket: Rocket, frame: PhysicsFrame, throttle: number, missionTime = 0): void {
     const ctx = this.ctx;
     const { H } = this;
 
     // ── Camera / zoom ──────────────────────────────────────────────────────
-    // Starts close (20 km at launch) and zooms out quadratically with altitude.
-    // ~20 km @ ground → ~220 km @ 100 km → ~820 km @ 200 km → ~10 Mm @ 700 km
-    const alt = frame.altitude;
+    // Use altitude above nearest body so lunar orbit zooms correctly.
+    // Without this, alt ≈ 378 Mm at Moon distance → viewHeightM ≈ 2.86e12 (black screen).
+    const alt = frame.altAboveNearest;
     const viewHeightM = 20_000 + alt * alt / 50_000;
     const mpp = viewHeightM / H;
 
@@ -108,6 +108,9 @@ export class Renderer {
 
     // ── Earth ─────────────────────────────────────────────────────────────
     this._drawEarth(camera);
+
+    // ── Moon ──────────────────────────────────────────────────────────────
+    this._drawMoon(getMoonPosition(missionTime), camera);
 
     // ── Launchpad / ground ─────────────────────────────────────────────
     this._drawLaunchpad(camera);
@@ -135,8 +138,8 @@ export class Renderer {
       this._drawAscentAero(rocket, partScale, frame);
     }
 
-    // Thermal heating / reentry plasma (heatFlux-based, renders on top of compression)
-    if (frame.heatFlux > 200 && Math.abs(frame.noseExposure) > 0.05) {
+    // Thermal heating / reentry plasma — only above ~Mach 2.5 at sea level (heatFlux >50k)
+    if (frame.heatFlux > 50_000 && Math.abs(frame.noseExposure) > 0.05) {
       this._drawAeroHeating(rocket, partScale, frame);
     }
 
@@ -197,6 +200,42 @@ export class Renderer {
     ctx.arc(earthScreen.x, earthScreen.y, earthRadPx, 0, Math.PI * 2);
     ctx.strokeStyle = 'rgba(100,180,255,0.12)';
     ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  // ─── Moon ────────────────────────────────────────────────────────────────
+
+  private _drawMoon(moonWorldPos: Vec2, cam: Camera): void {
+    const ctx = this.ctx;
+    const moonScreen = this._worldToScreen(moonWorldPos, cam);
+    const moonRadPx  = R_MOON / cam.metersPerPixel;
+
+    if (moonRadPx < 0.5) return;   // too small to bother drawing
+
+    const mx = moonScreen.x;
+    const my = moonScreen.y;
+
+    // Lit-side radial gradient (light from upper-left)
+    const moonGrad = ctx.createRadialGradient(
+      mx - moonRadPx * 0.28, my - moonRadPx * 0.28, moonRadPx * 0.05,
+      mx, my, moonRadPx,
+    );
+    moonGrad.addColorStop(0,    '#e8e8e0');
+    moonGrad.addColorStop(0.40, '#b0b0a8');
+    moonGrad.addColorStop(0.72, '#686860');
+    moonGrad.addColorStop(0.90, '#383830');
+    moonGrad.addColorStop(1.0,  '#141410');
+
+    ctx.beginPath();
+    ctx.arc(mx, my, moonRadPx, 0, Math.PI * 2);
+    ctx.fillStyle = moonGrad;
+    ctx.fill();
+
+    // Faint limb
+    ctx.beginPath();
+    ctx.arc(mx, my, moonRadPx, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(200,200,188,0.14)';
+    ctx.lineWidth = Math.max(1, moonRadPx * 0.01);
     ctx.stroke();
   }
 

@@ -478,7 +478,9 @@
         atmoLayerName: "TROPOSPHERE",
         airflowDir: { x: 0, y: -1 },
         heatFlux: 0,
-        noseExposure: 0
+        noseExposure: 0,
+        inMoonSOI: false,
+        altAboveNearest: 0
       };
       this.atmo = atmo;
     }
@@ -507,6 +509,7 @@
       const relToMoon = { x: body.pos.x - moonPos.x, y: body.pos.y - moonPos.y };
       const moonDist = Math.sqrt(relToMoon.x * relToMoon.x + relToMoon.y * relToMoon.y);
       const inMoonSOI = moonDist < MOON_SOI && moonDist > 0;
+      const altAboveNearest = inMoonSOI ? moonDist - R_MOON : altitude;
       let gravMag;
       let gravForce;
       if (inMoonSOI) {
@@ -645,7 +648,9 @@
         atmoLayerName,
         airflowDir,
         heatFlux,
-        noseExposure
+        noseExposure,
+        inMoonSOI,
+        altAboveNearest
       };
     }
     // ─── Utility Methods ────────────────────────────────────────────────────────
@@ -713,7 +718,9 @@
         atmoLayerName: "TROPOSPHERE",
         airflowDir: { x: 0, y: -1 },
         heatFlux: 0,
-        noseExposure: 0
+        noseExposure: 0,
+        inMoonSOI: false,
+        altAboveNearest: 0
       };
     }
     /**
@@ -1228,10 +1235,10 @@
      * @param frame       Latest physics frame data
      * @param throttle    Current throttle 0–1
      */
-    renderFlight(rocket, frame, throttle) {
+    renderFlight(rocket, frame, throttle, missionTime = 0) {
       const ctx = this.ctx;
       const { H } = this;
-      const alt = frame.altitude;
+      const alt = frame.altAboveNearest;
       const viewHeightM = 2e4 + alt * alt / 5e4;
       const mpp = viewHeightM / H;
       const camera = {
@@ -1242,6 +1249,7 @@
       const starFade = alt < 3e4 ? alt / 3e4 : 1;
       this._drawStars(camera, starFade);
       this._drawEarth(camera);
+      this._drawMoon(getMoonPosition(missionTime), camera);
       this._drawLaunchpad(camera);
       const rocketScreenPos = this._worldToScreen(rocket.body.pos, camera);
       ctx.save();
@@ -1255,7 +1263,7 @@
       if (frame.dynamicPressure > 5e3 && Math.abs(frame.noseExposure) > 0.05) {
         this._drawAscentAero(rocket, partScale, frame);
       }
-      if (frame.heatFlux > 200 && Math.abs(frame.noseExposure) > 0.05) {
+      if (frame.heatFlux > 5e4 && Math.abs(frame.noseExposure) > 0.05) {
         this._drawAeroHeating(rocket, partScale, frame);
       }
       ctx.restore();
@@ -1311,6 +1319,38 @@
       ctx.arc(earthScreen.x, earthScreen.y, earthRadPx, 0, Math.PI * 2);
       ctx.strokeStyle = "rgba(100,180,255,0.12)";
       ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+    // ─── Moon ────────────────────────────────────────────────────────────────
+    _drawMoon(moonWorldPos, cam) {
+      const ctx = this.ctx;
+      const moonScreen = this._worldToScreen(moonWorldPos, cam);
+      const moonRadPx = R_MOON / cam.metersPerPixel;
+      if (moonRadPx < 0.5)
+        return;
+      const mx = moonScreen.x;
+      const my = moonScreen.y;
+      const moonGrad = ctx.createRadialGradient(
+        mx - moonRadPx * 0.28,
+        my - moonRadPx * 0.28,
+        moonRadPx * 0.05,
+        mx,
+        my,
+        moonRadPx
+      );
+      moonGrad.addColorStop(0, "#e8e8e0");
+      moonGrad.addColorStop(0.4, "#b0b0a8");
+      moonGrad.addColorStop(0.72, "#686860");
+      moonGrad.addColorStop(0.9, "#383830");
+      moonGrad.addColorStop(1, "#141410");
+      ctx.beginPath();
+      ctx.arc(mx, my, moonRadPx, 0, Math.PI * 2);
+      ctx.fillStyle = moonGrad;
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(mx, my, moonRadPx, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(200,200,188,0.14)";
+      ctx.lineWidth = Math.max(1, moonRadPx * 0.01);
       ctx.stroke();
     }
     // ─── Ground / Launchpad Surface ───────────────────────────────────────────
@@ -3315,7 +3355,12 @@
       this._drawEarth();
       this.pathAge++;
       if (this.pathAge > 60 || this.cachedPath.length === 0) {
-        this.cachedPath = this._predictPath(rocket.body.pos, rocket.body.vel, missionTime, 600, 10);
+        const moonPosCurr = getMoonPosition(missionTime);
+        const moonDistCurr = vec2.length(vec2.sub(rocket.body.pos, moonPosCurr));
+        const rocketInSOI = moonDistCurr < MOON_SOI;
+        const predDt = rocketInSOI ? 4 : 10;
+        const predSteps = rocketInSOI ? 2200 : 1400;
+        this.cachedPath = this._predictPath(rocket.body.pos, rocket.body.vel, missionTime, predSteps, predDt);
         this._encounter = this._findEncounter(this.cachedPath);
         this.pathAge = 0;
         if (this.node)
@@ -3358,6 +3403,8 @@
       let t = startT;
       let prevAngle = Math.atan2(pos.y, pos.x);
       let totalAngle = 0;
+      let moonPrevAngle = NaN;
+      let moonOrbitAngle = 0;
       for (let i = 0; i < steps; i++) {
         const moonPos = getMoonPosition(t);
         const dx = pos.x - moonPos.x;
@@ -3371,10 +3418,23 @@
         if (moonDist < R_MOON)
           break;
         if (inSOI) {
+          const moonRelAngle = Math.atan2(dy, dx);
+          if (!isNaN(moonPrevAngle)) {
+            let dA = moonRelAngle - moonPrevAngle;
+            if (dA > Math.PI)
+              dA -= 2 * Math.PI;
+            if (dA < -Math.PI)
+              dA += 2 * Math.PI;
+            moonOrbitAngle += Math.abs(dA);
+            if (i > 10 && moonOrbitAngle >= 2 * Math.PI * 1.05)
+              break;
+          }
+          moonPrevAngle = moonRelAngle;
           const gMag = MU_MOON / (moonDist * moonDist);
           vel.x += -(dx / moonDist) * gMag * dt;
           vel.y += -(dy / moonDist) * gMag * dt;
         } else {
+          moonPrevAngle = NaN;
           const gMag = MU_EARTH / (r * r);
           vel.x += -(pos.x / r) * gMag * dt;
           vel.y += -(pos.y / r) * gMag * dt;
@@ -3386,7 +3446,7 @@
             dA += 2 * Math.PI;
           totalAngle += Math.abs(dA);
           prevAngle = curAngle;
-          if (i > 20 && totalAngle >= 2 * Math.PI)
+          if (i > 20 && totalAngle >= 2 * Math.PI * 1.02)
             break;
         }
         pos.x += vel.x * dt;
@@ -3413,7 +3473,11 @@
         x: base.vel.x + this.node.progradeDV * prograde.x + this.node.normalDV * radialOut.x,
         y: base.vel.y + this.node.progradeDV * prograde.y + this.node.normalDV * radialOut.y
       };
-      this.postNodePath = this._predictPath(base.pos, newVel, base.t, 600, 10);
+      const moonPosBase = getMoonPosition(base.t);
+      const baseInSOI = vec2.length(vec2.sub(base.pos, moonPosBase)) < MOON_SOI;
+      const pnDt = baseInSOI ? 4 : 10;
+      const pnSteps = baseInSOI ? 2200 : 1400;
+      this.postNodePath = this._predictPath(base.pos, newVel, base.t, pnSteps, pnDt);
       this._postNodeEncounter = this._findEncounter(this.postNodePath);
     }
     // ─── Encounter Detection ──────────────────────────────────────────────────
@@ -3435,6 +3499,8 @@
         }
       }
       if (entryIdx === -1)
+        return null;
+      if (entryIdx === 0)
         return null;
       return {
         entryIdx,
@@ -3663,7 +3729,27 @@
     _drawOrbMarkers(path) {
       if (path.length < 2)
         return;
+      const soiPts = path.filter((p) => p.inMoonSOI);
       const earthPts = path.filter((p) => !p.inMoonSOI);
+      if (soiPts.length > earthPts.length && soiPts.length > 4) {
+        let minD = Infinity, maxD = -Infinity;
+        let minPos2 = soiPts[0].pos, maxPos2 = soiPts[0].pos;
+        for (const pt of soiPts) {
+          const moonPt = getMoonPosition(pt.t);
+          const d = vec2.length(vec2.sub(pt.pos, moonPt));
+          if (d < minD) {
+            minD = d;
+            minPos2 = pt.pos;
+          }
+          if (d > maxD) {
+            maxD = d;
+            maxPos2 = pt.pos;
+          }
+        }
+        this._drawOrbMarkerMoon(minPos2, "Pe", THEME.warning, soiPts[0].t);
+        this._drawOrbMarkerMoon(maxPos2, "Ap", THEME.accent, soiPts[0].t);
+        return;
+      }
       if (earthPts.length < 2)
         return;
       let minR = Infinity, maxR = -Infinity;
@@ -3716,6 +3802,22 @@
       ctx.textAlign = "left";
       const alt = vec2.length(worldPos) - R_EARTH;
       const altStr = alt < 1e6 ? `${(alt / 1e3).toFixed(1)} km` : `${(alt / 1e6).toFixed(3)} Mm`;
+      ctx.fillText(`${label}: ${altStr}`, sp.x + 8, sp.y - 4);
+    }
+    /** Same as _drawOrbMarker but shows Moon-relative altitude */
+    _drawOrbMarkerMoon(worldPos, label, color, t) {
+      const ctx = this.ctx;
+      const sp = this._w2s(worldPos);
+      const moonPos = getMoonPosition(t);
+      const alt = vec2.length(vec2.sub(worldPos, moonPos)) - R_MOON;
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.fillStyle = color;
+      ctx.font = "bold 11px Courier New";
+      ctx.textAlign = "left";
+      const altStr = alt < 0 ? "SURFACE" : alt < 1e6 ? `${(alt / 1e3).toFixed(1)} km` : `${(alt / 1e6).toFixed(3)} Mm`;
       ctx.fillText(`${label}: ${altStr}`, sp.x + 8, sp.y - 4);
     }
     // ─── Moon Drawing ─────────────────────────────────────────────────────────
@@ -3849,6 +3951,9 @@
       const ctx = this.ctx;
       const pos = rocket.body.pos;
       const vel = rocket.body.vel;
+      const moonPosTH = getMoonPosition(missionTime);
+      if (vec2.length(vec2.sub(pos, moonPosTH)) < MOON_SOI)
+        return;
       const orb = computeOrbitalElements(pos, vel);
       if (orb.periAlt < 0 || orb.apoAlt === Infinity)
         return;
@@ -4359,12 +4464,12 @@
       this._checkFlightEvents();
       const frame = this.physics.lastFrame;
       if (this.isMapOpen) {
-        this.renderer.renderFlight(this.rocket, frame, this.throttle);
+        this.renderer.renderFlight(this.rocket, frame, this.throttle, this.physics.missionTime);
         this.mapView.render(this.rocket, this.wallTime, this.physics.missionTime, () => {
           this.isMapOpen = false;
         });
       } else {
-        this.renderer.renderFlight(this.rocket, frame, this.throttle);
+        this.renderer.renderFlight(this.rocket, frame, this.throttle, this.physics.missionTime);
         this.renderer.renderHUD(
           this.rocket,
           frame,
@@ -4793,7 +4898,10 @@
       this.rocket.body.vel = { x: v, y: 0 };
       this.rocket.body.angle = 0;
       this.rocket.body.angVel = 0;
+      this.rocket.body.mass = this.rocket.getTotalMass();
       this.rocket.hasLaunched = true;
+      this.rocket.isDestroyed = false;
+      this.accumulator = 0;
       this.isMapOpen = false;
       this.warpIndex = 0;
       this._switchTo(4 /* FLIGHT */);
@@ -4808,7 +4916,10 @@
       this.rocket.body.vel = { x: moonVel.x + v, y: moonVel.y };
       this.rocket.body.angle = 0;
       this.rocket.body.angVel = 0;
+      this.rocket.body.mass = this.rocket.getTotalMass();
       this.rocket.hasLaunched = true;
+      this.rocket.isDestroyed = false;
+      this.accumulator = 0;
       this.isMapOpen = false;
       this.warpIndex = 0;
       this._switchTo(4 /* FLIGHT */);

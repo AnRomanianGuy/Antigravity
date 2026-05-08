@@ -114,6 +114,9 @@ export interface PhysicsFrame {
   airflowDir: Vec2;         // unit vector: direction airflow travels (= normalize(-vel))
   heatFlux: number;         // raw heat flux before shielding (game units)
   noseExposure: number;     // dot(noseDir, airflowDir): <0 = nose windward, >0 = tail windward
+  // ── Celestial context ──
+  inMoonSOI: boolean;       // true when inside Moon's sphere of influence
+  altAboveNearest: number;  // altitude above nearest body surface (Moon if in SOI, Earth otherwise)
 }
 
 // ─── Physics Engine ───────────────────────────────────────────────────────────
@@ -140,6 +143,8 @@ export class PhysicsEngine {
     airflowDir: { x: 0, y: -1 },
     heatFlux: 0,
     noseExposure: 0,
+    inMoonSOI: false,
+    altAboveNearest: 0,
   };
 
   constructor(atmo: Atmosphere) {
@@ -183,7 +188,8 @@ export class PhysicsEngine {
     const moonPos    = getMoonPosition(this.missionTime);
     const relToMoon  = { x: body.pos.x - moonPos.x, y: body.pos.y - moonPos.y };
     const moonDist   = Math.sqrt(relToMoon.x * relToMoon.x + relToMoon.y * relToMoon.y);
-    const inMoonSOI  = moonDist < MOON_SOI && moonDist > 0;
+    const inMoonSOI      = moonDist < MOON_SOI && moonDist > 0;
+    const altAboveNearest = inMoonSOI ? moonDist - R_MOON : altitude;
 
     let gravMag: number;
     let gravForce: Vec2;
@@ -395,6 +401,8 @@ export class PhysicsEngine {
       airflowDir,
       heatFlux,
       noseExposure,
+      inMoonSOI,
+      altAboveNearest,
     };
   }
 
@@ -466,6 +474,7 @@ export class PhysicsEngine {
       heatingIntensity: 0, dynamicPressure: 0, gravityAcc: G0,
       dragForce: 0, thrustForce: 0, mach: 0, atmoLayerName: 'TROPOSPHERE',
       airflowDir: { x: 0, y: -1 }, heatFlux: 0, noseExposure: 0,
+      inMoonSOI: false, altAboveNearest: 0,
     };
   }
 
