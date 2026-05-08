@@ -448,6 +448,17 @@ export class PhysicsEngine {
   }
 
   /**
+   * Effective angular acceleration (rad/s²) that `applyRotation` will produce for this body.
+   * Used by the autopilot to compute a safe maximum angular velocity.
+   */
+  getRotationAlpha(body: RigidBody, hasPod: boolean): number {
+    const baseTorque = hasPod ? REACTION_WHEEL_TORQUE : GIMBAL_TORQUE_COEFF;
+    const L = 30;
+    const I = Math.max(body.mass * L * L / 12, 1);
+    return Math.min(8.0, Math.max(0.3, baseTorque / I));
+  }
+
+  /**
    * Quick gravity magnitude at a given altitude (m/s²).
    * Useful for Isp conversions in vacuum vs. atmosphere.
    */
