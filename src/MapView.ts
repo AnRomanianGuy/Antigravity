@@ -164,7 +164,12 @@ export class MapView {
       this.cachedPath  = this._predictPath(rocket.body.pos, rocket.body.vel, missionTime, predSteps, predDt);
       this._encounter  = this._findEncounter(this.cachedPath);
       this.pathAge     = 0;
-      if (this.node) this._recomputePostNode();
+      if (this.node) {
+        // Re-sync node index to the path point closest to the stored node time
+        // (prevents the node drifting as the rocket moves and the path shifts)
+        this._nodeIdx = this._findNodeIdx(this.node.time);
+        this._recomputePostNode();
+      }
     }
 
     this._drawTrajectory(this.cachedPath, false);
@@ -275,6 +280,17 @@ export class MapView {
     }
 
     return path;
+  }
+
+  /** Find the path index whose time is closest to the given mission time. */
+  private _findNodeIdx(nodeTime: number): number {
+    let bestIdx  = 0;
+    let bestDiff = Infinity;
+    for (let i = 0; i < this.cachedPath.length; i++) {
+      const diff = Math.abs(this.cachedPath[i].t - nodeTime);
+      if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
+    }
+    return bestIdx;
   }
 
   private _recomputePostNode(): void {

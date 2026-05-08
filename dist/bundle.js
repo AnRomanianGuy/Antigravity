@@ -3363,8 +3363,10 @@
         this.cachedPath = this._predictPath(rocket.body.pos, rocket.body.vel, missionTime, predSteps, predDt);
         this._encounter = this._findEncounter(this.cachedPath);
         this.pathAge = 0;
-        if (this.node)
+        if (this.node) {
+          this._nodeIdx = this._findNodeIdx(this.node.time);
           this._recomputePostNode();
+        }
       }
       this._drawTrajectory(this.cachedPath, false);
       if (this.node && this.postNodePath.length > 1) {
@@ -3454,6 +3456,19 @@
         t += dt;
       }
       return path;
+    }
+    /** Find the path index whose time is closest to the given mission time. */
+    _findNodeIdx(nodeTime) {
+      let bestIdx = 0;
+      let bestDiff = Infinity;
+      for (let i = 0; i < this.cachedPath.length; i++) {
+        const diff = Math.abs(this.cachedPath[i].t - nodeTime);
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          bestIdx = i;
+        }
+      }
+      return bestIdx;
     }
     _recomputePostNode() {
       if (!this.node) {
