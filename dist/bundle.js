@@ -3394,6 +3394,9 @@
       // ── Burn execution tracking ───────────────────────────────────────────────
       this._burnStartVel = null;
       this._burnTotalDV = 0;
+      this._burnDirX = 1;
+      // unit vector along planned burn direction
+      this._burnDirY = 0;
       this._dvRemaining = null;
       this._prevTimeToNode = Infinity;
       // ── Encounter cache ───────────────────────────────────────────────────────
@@ -3505,8 +3508,21 @@
       const timeToNode = this.node ? this.node.time - missionTime : Infinity;
       const isExecutingBurn = this.node !== null && timeToNode < 0;
       if (this.node && timeToNode < 0 && this._prevTimeToNode >= 0) {
-        this._burnStartVel = { x: rocket.body.vel.x, y: rocket.body.vel.y };
+        const vel = rocket.body.vel;
+        const pos = rocket.body.pos;
+        this._burnStartVel = { x: vel.x, y: vel.y };
         this._burnTotalDV = Math.hypot(this.node.progradeDV, this.node.normalDV);
+        const speed = Math.hypot(vel.x, vel.y);
+        const posLen = Math.hypot(pos.x, pos.y);
+        const pgX = speed > 0 ? vel.x / speed : 0;
+        const pgY = speed > 0 ? vel.y / speed : 1;
+        const roX = posLen > 0 ? pos.x / posLen : 0;
+        const roY = posLen > 0 ? pos.y / posLen : 1;
+        const bx = this.node.progradeDV * pgX + this.node.normalDV * roX;
+        const by = this.node.progradeDV * pgY + this.node.normalDV * roY;
+        const bl = Math.hypot(bx, by);
+        this._burnDirX = bl > 0 ? bx / bl : pgX;
+        this._burnDirY = bl > 0 ? by / bl : pgY;
       }
       if (!this.node || !isExecutingBurn)
         this._burnStartVel = null;
@@ -3514,7 +3530,7 @@
       if (isExecutingBurn && this._burnStartVel !== null) {
         const dx = rocket.body.vel.x - this._burnStartVel.x;
         const dy = rocket.body.vel.y - this._burnStartVel.y;
-        const dvAccum = Math.sqrt(dx * dx + dy * dy);
+        const dvAccum = Math.max(0, dx * this._burnDirX + dy * this._burnDirY);
         const dvRem = this._burnTotalDV - dvAccum;
         this._dvRemaining = isFinite(dvRem) ? Math.max(0, dvRem) : null;
       } else {

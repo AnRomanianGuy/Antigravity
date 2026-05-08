@@ -114,6 +114,8 @@ export class MapView {
   // ── Burn execution tracking ───────────────────────────────────────────────
   private _burnStartVel:  Vec2 | null = null;
   private _burnTotalDV    = 0;
+  private _burnDirX       = 1;   // unit vector along planned burn direction
+  private _burnDirY       = 0;
   private _dvRemaining:   number | null = null;
   private _prevTimeToNode = Infinity;
 
@@ -256,13 +258,30 @@ export class MapView {
    * Update burn-execution state every game frame, even when the map is not visible.
    * Must be called from Game._updateFlight() before renderBurnGuidance.
    */
-  tick(rocket: { body: { vel: { x: number; y: number } } }, missionTime: number): void {
+  tick(rocket: { body: { pos: Vec2; vel: Vec2 } }, missionTime: number): void {
     const timeToNode      = this.node ? this.node.time - missionTime : Infinity;
     const isExecutingBurn = this.node !== null && timeToNode < 0;
 
     if (this.node && timeToNode < 0 && this._prevTimeToNode >= 0) {
-      this._burnStartVel = { x: rocket.body.vel.x, y: rocket.body.vel.y };
+      const vel = rocket.body.vel;
+      const pos = rocket.body.pos;
+      this._burnStartVel = { x: vel.x, y: vel.y };
       this._burnTotalDV  = Math.hypot(this.node.progradeDV, this.node.normalDV);
+
+      // Compute burn direction unit vector once at ignition so we can project
+      // velocity changes onto it — this filters out orbital-rotation drift and
+      // gravity contamination that would otherwise inflate dvAccum and cut the burn short.
+      const speed  = Math.hypot(vel.x, vel.y);
+      const posLen = Math.hypot(pos.x, pos.y);
+      const pgX = speed  > 0 ? vel.x / speed  : 0;
+      const pgY = speed  > 0 ? vel.y / speed  : 1;
+      const roX = posLen > 0 ? pos.x / posLen : 0;
+      const roY = posLen > 0 ? pos.y / posLen : 1;
+      const bx  = this.node.progradeDV * pgX + this.node.normalDV * roX;
+      const by  = this.node.progradeDV * pgY + this.node.normalDV * roY;
+      const bl  = Math.hypot(bx, by);
+      this._burnDirX = bl > 0 ? bx / bl : pgX;
+      this._burnDirY = bl > 0 ? by / bl : pgY;
     }
     if (!this.node || !isExecutingBurn) this._burnStartVel = null;
     this._prevTimeToNode = timeToNode;
@@ -270,9 +289,10 @@ export class MapView {
     if (isExecutingBurn && this._burnStartVel !== null) {
       const dx = rocket.body.vel.x - this._burnStartVel.x;
       const dy = rocket.body.vel.y - this._burnStartVel.y;
-      const dvAccum = Math.sqrt(dx * dx + dy * dy);
+      // Project onto burn direction — avoids gravity/orbital-rotation contaminating
+      // the measurement and causing premature cutoff.
+      const dvAccum = Math.max(0, dx * this._burnDirX + dy * this._burnDirY);
       const dvRem   = this._burnTotalDV - dvAccum;
-      // Guard against NaN (e.g. if vel somehow became non-finite during high warp)
       this._dvRemaining = isFinite(dvRem) ? Math.max(0, dvRem) : null;
     } else {
       this._dvRemaining = null;
