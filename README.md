@@ -4,9 +4,11 @@ A lightweight 2D rocket simulator that runs in the browser. Build a rocket, laun
 
 Inspired by the physics of real spaceflight — gravity, thrust, atmospheric drag, and reentry heating are all modeled.
 
-Current version dev:d0.3.6
+<<<<<<< HEAD
+Current version dev:d0.3.7
 Current version main:m0.2.1
 
+=======
 **[Play on GitHub Pages](https://anromanianguy.github.io/Antigravity/)**
 
 ---
@@ -49,11 +51,19 @@ Then open `http://localhost:5173`.
 - [x] Rocket building
 - [x] Launch and staging
 - [x] Atmospheric simulation
+<<<<<<< HEAD
 - [x] Heating and reentry (partial working)
 - [x] Map view (AP/PE, trajectory)
 - [x] Maneuver nodes + SAS (WIP)
 - [ ] Second gravity body (Moon,Sun,Mars,etc. WIP)
 - [ ] Orbital transfer planning (WIP)
+=======
+- [x] Heating and reentry
+- [x] Map view (AP/PE, trajectory)
+- [x] Maneuver nodes
+- [ ] Second gravity body (Moon,WIP)
+- [ ] Orbital transfer planning
+>>>>>>> origin/main
 - [ ] Landing system
 - [ ] Advanced telemetry UI
 
