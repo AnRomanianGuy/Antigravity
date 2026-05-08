@@ -49,11 +49,11 @@ Then open `http://localhost:5173`.
 - [x] Rocket building
 - [x] Launch and staging
 - [x] Atmospheric simulation
-- [x] Heating and reentry
+- [x] Heating and reentry (partial working)
 - [x] Map view (AP/PE, trajectory)
 - [x] Maneuver nodes
-- [ ] Second gravity body (Moon,WIP)
-- [ ] Orbital transfer planning(WIP)
+- [ ] Second gravity body (Moon,Sun,Mars,etc. WIP)
+- [ ] Orbital transfer planning (WIP)
 - [ ] Landing system
 - [ ] Advanced telemetry UI
 

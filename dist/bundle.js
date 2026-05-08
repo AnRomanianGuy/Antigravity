@@ -452,7 +452,7 @@
       y: MOON_ORBIT_RADIUS * MOON_OMEGA * Math.cos(angle)
     };
   }
-  var REACTION_WHEEL_TORQUE = 2e5;
+  var REACTION_WHEEL_TORQUE = 2e6;
   var GIMBAL_TORQUE_COEFF = 6e4;
   var ANGULAR_DAMPING = 0.985;
   var HEAT_COEFF = 7e-5;
@@ -461,6 +461,7 @@
   var MAX_HEAT_FLUX = 36e4;
   var PhysicsEngine = class {
     constructor(atmo) {
+      this._heatBuf = [];
       /** Accumulated mission elapsed time (seconds) */
       this.missionTime = 0;
       /** Last computed frame data for HUD display */
@@ -521,7 +522,9 @@
       const vacFrac = Math.max(0, 1 - pressure / 101325);
       let thrustMag = 0;
       let massFlow = 0;
-      for (const p of rocket.parts.filter((pp) => pp.isThrusting)) {
+      for (const p of rocket.parts) {
+        if (!p.isThrusting)
+          continue;
         const thr = p.def.ignoreThrottle ? 1 : rocket.throttle;
         let localVacFrac;
         if (p.def.altitudeVacuum !== void 0) {
@@ -588,7 +591,15 @@
       const exposure = Math.abs(noseExposure);
       const heatFlux = rho > 0 ? HEAT_COEFF * rho * speed * speed * speed : 0;
       if (heatFlux > 500 && exposure > 0.05) {
-        const windwardFirst = noseExposure < 0 ? [...rocket.parts].sort((a, b) => b.slotIndex - a.slotIndex) : [...rocket.parts].sort((a, b) => a.slotIndex - b.slotIndex);
+        const buf = this._heatBuf;
+        buf.length = 0;
+        for (const p of rocket.parts)
+          buf.push(p);
+        if (noseExposure < 0)
+          buf.sort((a, b) => b.slotIndex - a.slotIndex);
+        else
+          buf.sort((a, b) => a.slotIndex - b.slotIndex);
+        const windwardFirst = buf;
         let passthrough = exposure;
         for (const part of windwardFirst) {
           if (part.isDestroyed)
@@ -666,10 +677,11 @@
      * @param hasPod    Whether a command pod (with SAS) is present
      */
     applyRotation(body, direction, dt, hasPod) {
-      const torque = hasPod ? REACTION_WHEEL_TORQUE : GIMBAL_TORQUE_COEFF;
+      const baseTorque = hasPod ? REACTION_WHEEL_TORQUE : GIMBAL_TORQUE_COEFF;
       const L = 30;
       const I = Math.max(body.mass * L * L / 12, 1);
-      body.angVel += torque / I * direction * dt;
+      const alpha = Math.min(8, Math.max(0.3, baseTorque / I));
+      body.angVel += alpha * direction * dt;
     }
     /**
      * Quick gravity magnitude at a given altitude (m/s²).
@@ -1208,6 +1220,13 @@
     return stars;
   }
   var STARS = generateStars(600);
+  var STAR_BUCKETS = Array.from({ length: 5 }, (_, i) => ({
+    stars: [],
+    bright: (i + 0.5) / 5
+  }));
+  for (const s of STARS) {
+    STAR_BUCKETS[Math.min(4, Math.floor(s.bright * 5))].stars.push(s);
+  }
   var Renderer = class _Renderer {
     constructor(ctx) {
       /** Elapsed time in seconds — used for animated effects */
@@ -1235,13 +1254,14 @@
       const { H } = this;
       const alt = frame.altAboveNearest;
       const viewHeightM = alt < 1e5 ? 2e4 + alt * alt / 5e4 : 22e4 * Math.pow(alt / 1e5, 0.6);
-      const mpp = viewHeightM / H;
+      const mpp = isFinite(viewHeightM) && H > 0 ? viewHeightM / H : 1e3;
       const camera = {
         focus: vec2.clone(rocket.body.pos),
         metersPerPixel: mpp
       };
-      this._drawSkyBackground(alt);
-      const starFade = alt < 3e4 ? alt / 3e4 : 1;
+      const skyAlt = frame.inMoonSOI ? 2e5 : frame.altitude;
+      this._drawSkyBackground(skyAlt);
+      const starFade = skyAlt < 3e4 ? skyAlt / 3e4 : 1;
       this._drawStars(camera, starFade);
       this._drawEarth(camera);
       this._drawMoon(getMoonPosition(missionTime), camera);
@@ -1251,15 +1271,23 @@
       ctx.translate(rocketScreenPos.x, rocketScreenPos.y);
       ctx.rotate(rocket.body.angle);
       const partScale = Math.max(3 / mpp, 1);
-      if (rocket.isThrusting && throttle > 0) {
-        this._drawExhaustPlume(rocket, partScale, throttle);
+      let stackH = 0, stackMaxW = 44 * partScale;
+      for (const p of rocket.parts) {
+        if (!p.def.radialMount)
+          stackH += p.def.renderH * partScale;
+        const pw = p.def.renderW * partScale;
+        if (pw > stackMaxW)
+          stackMaxW = pw;
       }
-      this._drawRocketParts(rocket, partScale);
+      if (rocket.isThrusting && throttle > 0) {
+        this._drawExhaustPlume(rocket, partScale, throttle, stackH);
+      }
+      this._drawRocketParts(rocket, partScale, stackH);
       if (frame.dynamicPressure > 5e3 && Math.abs(frame.noseExposure) > 0.05) {
-        this._drawAscentAero(rocket, partScale, frame);
+        this._drawAscentAero(rocket, partScale, frame, stackH, stackMaxW);
       }
       if (frame.heatFlux > 5e4 && Math.abs(frame.noseExposure) > 0.05) {
-        this._drawAeroHeating(rocket, partScale, frame);
+        this._drawAeroHeating(rocket, partScale, frame, stackH, stackMaxW);
       }
       ctx.restore();
     }
@@ -1453,12 +1481,16 @@
       const px = cam.focus.x / R_EARTH * 80 % W;
       const py = cam.focus.y / R_EARTH * 80 % H;
       ctx.save();
-      for (const s of STARS) {
-        const sx = ((s.x * W + px) % W + W) % W;
-        const sy = ((s.y * H + py) % H + H) % H;
+      for (const bucket of STAR_BUCKETS) {
+        const alpha = Math.round(bucket.bright * opacity * 100) / 100;
+        ctx.fillStyle = `rgba(255,255,255,${alpha})`;
         ctx.beginPath();
-        ctx.arc(sx, sy, s.r, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(255,255,255,${(s.bright * opacity).toFixed(2)})`;
+        for (const s of bucket.stars) {
+          const sx = ((s.x * W + px) % W + W) % W;
+          const sy = ((s.y * H + py) % H + H) % H;
+          ctx.moveTo(sx + s.r, sy);
+          ctx.arc(sx, sy, s.r, 0, Math.PI * 2);
+        }
         ctx.fill();
       }
       ctx.restore();
@@ -1476,11 +1508,10 @@
      * Draw all parts centred at origin (0,0) in local rocket space.
      * Radial parts (SRBs) are drawn offset left and right with struts.
      */
-    _drawRocketParts(rocket, scale) {
+    _drawRocketParts(rocket, scale, totalH) {
       const ctx = this.ctx;
       if (rocket.parts.length === 0)
         return;
-      const totalH = rocket.parts.reduce((s, p) => p.def.radialMount ? s : s + p.def.renderH * scale, 0);
       let yBottom = totalH / 2;
       const mainHW = _Renderer.STACK_HALF_W * scale;
       const radGap = _Renderer.RADIAL_GAP * scale;
@@ -1805,9 +1836,8 @@
       ctx.fillStyle = coreGrad;
       ctx.fill();
     }
-    _drawExhaustPlume(rocket, scale, throttle) {
+    _drawExhaustPlume(rocket, scale, throttle, totalH) {
       const ctx = this.ctx;
-      const totalH = rocket.parts.reduce((s, p) => p.def.radialMount ? s : s + p.def.renderH * scale, 0);
       const stackBottom = totalH / 2;
       const mainHW = _Renderer.STACK_HALF_W * scale;
       const radGap = _Renderer.RADIAL_GAP * scale;
@@ -1889,7 +1919,7 @@
      *  25–45 kPa  : stronger streaks + edge lines
      *  45–80 kPa  : haze turns orange, streaks turn orange, sparks appear
      */
-    _drawAscentAero(rocket, scale, frame) {
+    _drawAscentAero(rocket, scale, frame, totalH, maxW) {
       const q = frame.dynamicPressure;
       if (q < _Renderer.Q_STREAK_START)
         return;
@@ -1899,9 +1929,7 @@
         return;
       const ctx = this.ctx;
       const t = this.time;
-      const totalH = rocket.parts.reduce((s, p) => p.def.radialMount ? s : s + p.def.renderH * scale, 0);
       const halfH = totalH / 2;
-      const maxW = rocket.parts.reduce((m, p) => Math.max(m, p.def.renderW * scale), 44 * scale);
       const noseIsWindward = noseExp < 0;
       const windwardY = noseIsWindward ? -halfH : halfH;
       const streamSgn = noseIsWindward ? 1 : -1;
@@ -1910,7 +1938,7 @@
       const frand = (seed) => {
         let s = (seed ^ 4027435774) >>> 0;
         s = Math.imul(s ^ s >>> 16, 73244475) >>> 0;
-        return (s ^ s >>> 16) / 4294967295;
+        return ((s ^ s >>> 16) >>> 0) / 4294967295;
       };
       ctx.save();
       ctx.globalCompositeOperation = "screen";
@@ -2018,16 +2046,14 @@
      * noseExposure < 0 → nose (local y = -halfH) is windward.
      * noseExposure > 0 → tail (local y = +halfH) is windward.
      */
-    _drawAeroHeating(rocket, scale, frame) {
+    _drawAeroHeating(rocket, scale, frame, totalH, maxW) {
       const ctx = this.ctx;
       const t = this.time;
       const intensity = Math.min(frame.heatFlux / MAX_HEAT_FLUX, 1);
       const exposure = Math.abs(frame.noseExposure);
       if (intensity < 0.01 || exposure < 0.05)
         return;
-      const totalH = rocket.parts.reduce((s, p) => p.def.radialMount ? s : s + p.def.renderH * scale, 0);
       const halfH = totalH / 2;
-      const maxW = rocket.parts.reduce((m, p) => Math.max(m, p.def.renderW * scale), 44 * scale);
       const noseIsWindward = frame.noseExposure < 0;
       const windwardY = noseIsWindward ? -halfH : halfH;
       const streamSgn = noseIsWindward ? 1 : -1;
@@ -2063,7 +2089,7 @@
       const frand = (seed) => {
         let s = (seed ^ 3735928559) >>> 0;
         s = Math.imul(s ^ s >>> 16, 73244475) >>> 0;
-        return (s ^ s >>> 16) / 4294967295;
+        return ((s ^ s >>> 16) >>> 0) / 4294967295;
       };
       for (let i = 0; i < numStreaks; i++) {
         const speed = 1.5 + frand(i * 7) * 2.5;
@@ -2388,7 +2414,7 @@
       ctx.font = "bold 14px Courier New";
       ctx.textAlign = "center";
       ctx.fillText("\u25C0", this.warpDownBtn.x + btnW / 2, this.warpDownBtn.y + 19);
-      const atMax = warpFactor === 10;
+      const atMax = warpFactor === 1e4;
       ctx.fillStyle = atMax ? "rgba(255,255,255,0.08)" : THEME.accentDim;
       this._roundRect(this.warpUpBtn.x, this.warpUpBtn.y, btnW, btnH, 4);
       ctx.fill();
@@ -3358,8 +3384,11 @@
       this.node = null;
       this._nodeIdx = 0;
       // ── Trajectory cache ──────────────────────────────────────────────────────
+      // Pools are grown as needed and reused across frames to avoid GC pressure.
       this.cachedPath = [];
       this.postNodePath = [];
+      this._pathPool = [];
+      this._pnPool = [];
       this.pathAge = 0;
       this._moonPosAtRender = { x: 0, y: 0 };
       // ── Burn execution tracking ───────────────────────────────────────────────
@@ -3423,9 +3452,9 @@
           const orb = computeOrbitalElements(rocket.body.pos, rocket.body.vel);
           const period = isFinite(orb.period) && orb.period > 0 ? orb.period : 4 * 86400;
           predTime = Math.min(period * 2.5, 365 * 86400);
-          predEarthDt = Math.max(10, Math.ceil(predTime / 1400));
+          predEarthDt = Math.max(10, period / 200);
         }
-        this.cachedPath = this._predictPath(rocket.body.pos, rocket.body.vel, missionTime, predTime, predEarthDt);
+        this.cachedPath = this._predictPath(this._pathPool, rocket.body.pos, rocket.body.vel, missionTime, predTime, predEarthDt);
         this._encounter = this._findEncounter(this.cachedPath);
         this.pathAge = 0;
         if (this.node) {
@@ -3485,14 +3514,16 @@
       if (isExecutingBurn && this._burnStartVel !== null) {
         const dx = rocket.body.vel.x - this._burnStartVel.x;
         const dy = rocket.body.vel.y - this._burnStartVel.y;
-        this._dvRemaining = Math.max(0, this._burnTotalDV - Math.sqrt(dx * dx + dy * dy));
+        const dvAccum = Math.sqrt(dx * dx + dy * dy);
+        const dvRem = this._burnTotalDV - dvAccum;
+        this._dvRemaining = isFinite(dvRem) ? Math.max(0, dvRem) : null;
       } else {
         this._dvRemaining = null;
       }
     }
     // ─── Trajectory Prediction (patched conics) ───────────────────────────────
-    _predictPath(startPos, startVel, startT, maxTime, earthDt) {
-      const path = [];
+    _predictPath(pool, startPos, startVel, startT, maxTime, earthDt) {
+      let count = 0;
       let pos = vec2.clone(startPos);
       let vel = vec2.clone(startVel);
       let t = startT;
@@ -3507,10 +3538,35 @@
         const dy = pos.y - moonPos.y;
         const moonDist = Math.sqrt(dx * dx + dy * dy);
         const inSOI = moonDist < MOON_SOI && moonDist > 0;
-        const effectiveDt = inSOI ? 2 : earthDt;
-        const moonRelPos = inSOI ? { x: pos.x - moonPos.x, y: pos.y - moonPos.y } : void 0;
-        path.push({ pos: vec2.clone(pos), vel: vec2.clone(vel), t, inMoonSOI: inSOI, moonRelPos });
-        const r = vec2.length(pos);
+        const r = Math.sqrt(pos.x * pos.x + pos.y * pos.y);
+        let effectiveDt;
+        if (inSOI) {
+          effectiveDt = 2;
+        } else {
+          const speed = Math.sqrt(vel.x * vel.x + vel.y * vel.y);
+          const periDt = speed > 0 ? 0.05 * r / speed : earthDt;
+          effectiveDt = Math.min(earthDt, Math.max(1, periDt));
+        }
+        let pt = pool[count];
+        if (pt === void 0) {
+          pt = { pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, t: 0, inMoonSOI: false };
+          pool.push(pt);
+        }
+        pt.pos.x = pos.x;
+        pt.pos.y = pos.y;
+        pt.vel.x = vel.x;
+        pt.vel.y = vel.y;
+        pt.t = t;
+        pt.inMoonSOI = inSOI;
+        if (inSOI) {
+          if (!pt.moonRelPos)
+            pt.moonRelPos = { x: 0, y: 0 };
+          pt.moonRelPos.x = dx;
+          pt.moonRelPos.y = dy;
+        } else {
+          pt.moonRelPos = void 0;
+        }
+        count++;
         if (r < R_EARTH)
           break;
         if (moonDist < R_MOON)
@@ -3554,7 +3610,8 @@
         t += effectiveDt;
         elapsed += effectiveDt;
       }
-      return path;
+      pool.length = count;
+      return pool;
     }
     /** Find the path index whose time is closest to the given mission time. */
     _findNodeIdx(nodeTime) {
@@ -3603,9 +3660,9 @@
         const orb = computeOrbitalElements(base.pos, newVel);
         const period = isFinite(orb.period) && orb.period > 0 ? orb.period : 4 * 86400;
         pnTime = Math.min(period * 2.5, 365 * 86400);
-        pnEarthDt = Math.max(10, Math.ceil(pnTime / 1400));
+        pnEarthDt = Math.max(10, period / 200);
       }
-      this.postNodePath = this._predictPath(base.pos, newVel, base.t, pnTime, pnEarthDt);
+      this.postNodePath = this._predictPath(this._pnPool, base.pos, newVel, base.t, pnTime, pnEarthDt);
       this._postNodeEncounter = this._findEncounter(this.postNodePath);
     }
     // ─── Encounter Detection ──────────────────────────────────────────────────
@@ -3865,55 +3922,64 @@
     _drawOrbMarkers(path, moonPosNow) {
       if (path.length < 2)
         return;
-      const soiPts = path.filter((p) => p.inMoonSOI);
-      const earthPts = path.filter((p) => !p.inMoonSOI);
-      if (soiPts.length > earthPts.length && soiPts.length > 4) {
-        let minD = Infinity, maxD = -Infinity;
-        let minRel = { x: 0, y: 0 }, maxRel = { x: 0, y: 0 };
-        for (const pt of soiPts) {
-          if (!pt.moonRelPos)
-            continue;
-          const d = Math.hypot(pt.moonRelPos.x, pt.moonRelPos.y);
-          if (d < minD) {
-            minD = d;
-            minRel = pt.moonRelPos;
+      let soiCount = 0, earthCount = 0;
+      let minD = Infinity, maxD = -Infinity;
+      let minRel = { x: 0, y: 0 }, maxRel = { x: 0, y: 0 };
+      let minR = Infinity, maxR = -Infinity;
+      let minPos = path[0].pos, maxPos = path[0].pos;
+      let firstEarthPos = null;
+      for (const pt of path) {
+        if (pt.inMoonSOI) {
+          soiCount++;
+          if (pt.moonRelPos) {
+            const d = Math.hypot(pt.moonRelPos.x, pt.moonRelPos.y);
+            if (d < minD) {
+              minD = d;
+              minRel = pt.moonRelPos;
+            }
+            if (d > maxD) {
+              maxD = d;
+              maxRel = pt.moonRelPos;
+            }
           }
-          if (d > maxD) {
-            maxD = d;
-            maxRel = pt.moonRelPos;
+        } else {
+          earthCount++;
+          if (firstEarthPos === null) {
+            firstEarthPos = pt.pos;
+            minPos = pt.pos;
+            maxPos = pt.pos;
+          }
+          const r = vec2.length(pt.pos);
+          if (r < minR) {
+            minR = r;
+            minPos = pt.pos;
+          }
+          if (r > maxR) {
+            maxR = r;
+            maxPos = pt.pos;
           }
         }
+      }
+      if (soiCount > earthCount && soiCount > 4) {
         this._drawOrbMarkerMoon(minRel, moonPosNow, "Pe", THEME.warning);
         this._drawOrbMarkerMoon(maxRel, moonPosNow, "Ap", THEME.accent);
         return;
       }
-      if (earthPts.length < 2)
+      if (earthCount < 2 || firstEarthPos === null)
         return;
-      let minR = Infinity, maxR = -Infinity;
-      let minPos = earthPts[0].pos, maxPos = earthPts[0].pos;
-      for (const pt of earthPts) {
-        const r = vec2.length(pt.pos);
-        if (r < minR) {
-          minR = r;
-          minPos = pt.pos;
-        }
-        if (r > maxR) {
-          maxR = r;
-          maxPos = pt.pos;
-        }
-      }
       this._drawOrbMarker(minPos, "Pe", THEME.warning);
       this._drawOrbMarker(maxPos, "Ap", THEME.accent);
     }
     _drawOrbMarkersPost(path) {
       if (path.length < 2)
         return;
-      const earthPts = path.filter((p) => !p.inMoonSOI);
-      if (earthPts.length < 2)
-        return;
       let minR = Infinity, maxR = -Infinity;
-      let minPos = earthPts[0].pos, maxPos = earthPts[0].pos;
-      for (const pt of earthPts) {
+      let minPos = null, maxPos = null;
+      let earthCount = 0;
+      for (const pt of path) {
+        if (pt.inMoonSOI)
+          continue;
+        earthCount++;
         const r = vec2.length(pt.pos);
         if (r < minR) {
           minR = r;
@@ -3924,6 +3990,8 @@
           maxPos = pt.pos;
         }
       }
+      if (earthCount < 2 || minPos === null || maxPos === null)
+        return;
       this._drawOrbMarker(minPos, "Pe", "#ffcc00");
       this._drawOrbMarker(maxPos, "Ap", "#ffaa00");
     }
@@ -4303,24 +4371,76 @@
       const ctx = this.ctx;
       const centre = this._w2s({ x: 0, y: 0 });
       const moonOrbitAlt = MOON_ORBIT_RADIUS - R_EARTH;
-      const altitudes = [1e5, 5e5, 1e6, 3e6, 1e7, moonOrbitAlt];
-      ctx.setLineDash([4, 8]);
-      ctx.lineWidth = 0.5;
+      const RINGS = [
+        { alt: 1e5, label: "K\xE1rm\xE1n  100 km" },
+        { alt: 5e5, label: "500 km" },
+        { alt: 1e6, label: "1 Mm" },
+        { alt: 3e6, label: "3 Mm" },
+        { alt: 1e7, label: "10 Mm" },
+        { alt: moonOrbitAlt, label: "Moon orbit", moon: true }
+      ];
+      let pnPe = -Infinity, pnAp = Infinity;
+      let pnHasOrbit = false;
+      if (this.postNodePath.length > 0) {
+        const pt0 = this.postNodePath[0];
+        if (!pt0.inMoonSOI) {
+          const orb = computeOrbitalElements(pt0.pos, pt0.vel);
+          if (isFinite(orb.periAlt)) {
+            pnPe = orb.periAlt;
+            pnAp = isFinite(orb.apoAlt) ? orb.apoAlt : Infinity;
+            pnHasOrbit = true;
+          }
+        }
+      }
+      const earthRings = RINGS.filter((r) => !r.moon);
+      const closestRingTo = (target) => {
+        let best = 0, bestD = Infinity;
+        for (let i = 0; i < earthRings.length; i++) {
+          const d = Math.abs(earthRings[i].alt - target);
+          if (d < bestD) {
+            bestD = d;
+            best = i;
+          }
+        }
+        return best;
+      };
+      const apRingIdx = pnHasOrbit && isFinite(pnAp) ? closestRingTo(pnAp) : -1;
+      const peRingIdx = pnHasOrbit && pnPe > -Infinity ? closestRingTo(pnPe) : -1;
       ctx.textAlign = "left";
-      ctx.font = "10px Courier New";
-      for (const alt of altitudes) {
+      for (let i = 0; i < RINGS.length; i++) {
+        const { alt, label, moon } = RINGS[i];
         const r = (R_EARTH + alt) / this.eMpp;
-        const isMoonOrbit = alt === moonOrbitAlt;
+        const earthIdx = moon ? -1 : earthRings.findIndex((x) => x.alt === alt);
+        const isAp = earthIdx >= 0 && earthIdx === apRingIdx;
+        const isPe = earthIdx >= 0 && earthIdx === peRingIdx;
+        const inBand = pnHasOrbit && !moon && alt >= pnPe && (pnAp === Infinity || alt <= pnAp);
+        ctx.setLineDash([4, 8]);
         ctx.beginPath();
         ctx.arc(centre.x, centre.y, r, 0, Math.PI * 2);
-        ctx.strokeStyle = isMoonOrbit ? "rgba(100,100,140,0.35)" : "rgba(30,80,120,0.5)";
+        if (isAp) {
+          ctx.strokeStyle = "rgba(80,220,120,0.80)";
+          ctx.lineWidth = 1.4;
+        } else if (isPe) {
+          ctx.strokeStyle = "rgba(255,200,60,0.80)";
+          ctx.lineWidth = 1.4;
+        } else if (inBand) {
+          ctx.strokeStyle = "rgba(30,140,210,0.65)";
+          ctx.lineWidth = 0.8;
+        } else if (moon) {
+          ctx.strokeStyle = "rgba(100,100,140,0.35)";
+          ctx.lineWidth = 0.5;
+        } else {
+          ctx.strokeStyle = "rgba(30,80,120,0.50)";
+          ctx.lineWidth = 0.5;
+        }
         ctx.stroke();
+        ctx.setLineDash([]);
         const labelX = centre.x + r + 4;
-        const labelStr = alt >= 1e6 ? isMoonOrbit ? "Moon orbit" : `${(alt / 1e6).toFixed(0)} Mm` : `${(alt / 1e3).toFixed(0)} km`;
-        ctx.fillStyle = isMoonOrbit ? "rgba(120,120,160,0.7)" : "rgba(60,110,160,0.8)";
-        ctx.fillText(labelStr, labelX, centre.y - 4);
+        const suffix = isAp ? "  \u2190 Ap" : isPe ? "  \u2190 Pe" : "";
+        ctx.font = isAp || isPe ? "bold 10px Courier New" : "10px Courier New";
+        ctx.fillStyle = isAp ? "rgba(80,230,120,0.95)" : isPe ? "rgba(255,210,60,0.95)" : moon ? "rgba(120,120,160,0.70)" : inBand ? "rgba(80,160,220,0.90)" : "rgba(60,110,160,0.80)";
+        ctx.fillText(label + suffix, labelX, centre.y - 4);
       }
-      ctx.setLineDash([]);
     }
     // ─── Rocket Marker ────────────────────────────────────────────────────────
     _drawRocketMarker(rocket, time) {
@@ -4578,6 +4698,13 @@
         this.throttle = 0;
         this.rocket.body.mass = this.rocket.getTotalMass();
         this.physics.step(this.rocket.body, this.rocket, bigDt);
+        if (!isFinite(this.rocket.body.pos.x) || !isFinite(this.rocket.body.pos.y)) {
+          this.rocket.body.pos.x = isFinite(this.rocket.body.pos.x) ? this.rocket.body.pos.x : 0;
+          this.rocket.body.pos.y = isFinite(this.rocket.body.pos.y) ? this.rocket.body.pos.y : 6371001;
+          this.rocket.body.vel.x = 0;
+          this.rocket.body.vel.y = 0;
+          this.warpIndex = 0;
+        }
       } else {
         this.accumulator += rawDt * warpFactor;
         const maxSteps = MAX_PHYSICS_STEPS * warpFactor;
@@ -5134,8 +5261,34 @@
   canvas.height = window.innerHeight;
   var game = new Game(canvas);
   game.init();
+  var cvs = canvas;
+  var _crashed = false;
   function loop(timestamp) {
-    game.loop(timestamp);
+    if (_crashed)
+      return;
+    try {
+      game.loop(timestamp);
+    } catch (err) {
+      _crashed = true;
+      console.error("[Antigravity] Unhandled exception in game loop:", err);
+      const ctx = cvs.getContext("2d");
+      if (ctx) {
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, cvs.width, cvs.height);
+        ctx.fillStyle = "#ff4444";
+        ctx.font = "bold 22px Courier New";
+        ctx.textAlign = "center";
+        ctx.fillText("RUNTIME ERROR \u2014 see browser console", cvs.width / 2, cvs.height / 2 - 16);
+        ctx.fillStyle = "#aaa";
+        ctx.font = "14px Courier New";
+        const msg = err instanceof Error ? err.message : String(err);
+        ctx.fillText(msg.slice(0, 120), cvs.width / 2, cvs.height / 2 + 16);
+        ctx.fillStyle = "#666";
+        ctx.font = "12px Courier New";
+        ctx.fillText("Reload the page to restart.", cvs.width / 2, cvs.height / 2 + 42);
+      }
+      return;
+    }
     requestAnimationFrame(loop);
   }
   requestAnimationFrame(loop);

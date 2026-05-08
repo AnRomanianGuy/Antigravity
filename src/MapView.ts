@@ -103,8 +103,11 @@ export class MapView {
   private _nodeIdx  = 0;
 
   // ── Trajectory cache ──────────────────────────────────────────────────────
+  // Pools are grown as needed and reused across frames to avoid GC pressure.
   private cachedPath:      TrajPoint[] = [];
   private postNodePath:    TrajPoint[] = [];
+  private _pathPool:       TrajPoint[] = [];
+  private _pnPool:         TrajPoint[] = [];
   private pathAge          = 0;
   private _moonPosAtRender: Vec2 = { x: 0, y: 0 };
 
@@ -189,10 +192,12 @@ export class MapView {
         const period = isFinite(orb.period) && orb.period > 0 ? orb.period : 4 * 86_400;
         // Show up to 2.5 orbits regardless of size; cap at 1 year to prevent runaway
         predTime    = Math.min(period * 2.5, 365 * 86_400);
-        predEarthDt = Math.max(10, Math.ceil(predTime / 1_400));
+        // period/200 → ~200 steps/orbit baseline; the adaptive-dt logic inside
+        // _predictPath will further reduce this near periapsis of eccentric orbits.
+        predEarthDt = Math.max(10, period / 200);
       }
 
-      this.cachedPath  = this._predictPath(rocket.body.pos, rocket.body.vel, missionTime, predTime, predEarthDt);
+      this.cachedPath  = this._predictPath(this._pathPool, rocket.body.pos, rocket.body.vel, missionTime, predTime, predEarthDt);
       this._encounter  = this._findEncounter(this.cachedPath);
       this.pathAge     = 0;
       if (this.node) {
@@ -265,7 +270,10 @@ export class MapView {
     if (isExecutingBurn && this._burnStartVel !== null) {
       const dx = rocket.body.vel.x - this._burnStartVel.x;
       const dy = rocket.body.vel.y - this._burnStartVel.y;
-      this._dvRemaining = Math.max(0, this._burnTotalDV - Math.sqrt(dx * dx + dy * dy));
+      const dvAccum = Math.sqrt(dx * dx + dy * dy);
+      const dvRem   = this._burnTotalDV - dvAccum;
+      // Guard against NaN (e.g. if vel somehow became non-finite during high warp)
+      this._dvRemaining = isFinite(dvRem) ? Math.max(0, dvRem) : null;
     } else {
       this._dvRemaining = null;
     }
@@ -274,9 +282,11 @@ export class MapView {
   // ─── Trajectory Prediction (patched conics) ───────────────────────────────
 
   private _predictPath(
+    pool: TrajPoint[],
     startPos: Vec2, startVel: Vec2, startT: number, maxTime: number, earthDt: number,
   ): TrajPoint[] {
-    const path: TrajPoint[] = [];
+    // Fill pool in-place, reusing existing TrajPoint objects to avoid GC churn.
+    let count = 0;
     let pos = vec2.clone(startPos);
     let vel = vec2.clone(startVel);
     let t   = startT;
@@ -284,41 +294,63 @@ export class MapView {
     let prevAngle  = Math.atan2(pos.y, pos.x);
     let totalAngle = 0;
 
-    // Moon-relative orbit angle tracking — terminates after one full Moon orbit
     let moonPrevAngle  = NaN;
     let moonOrbitAngle = 0;
 
     let elapsed = 0;
     for (let i = 0; i < 50_000 && elapsed < maxTime; i++) {
-      // Moon state at this integration time
       const moonPos  = getMoonPosition(t);
       const dx       = pos.x - moonPos.x;
       const dy       = pos.y - moonPos.y;
       const moonDist = Math.sqrt(dx * dx + dy * dy);
       const inSOI    = moonDist < MOON_SOI && moonDist > 0;
-      // Always use fine steps inside Moon SOI; use coarse earthDt for long transfer arcs
-      const effectiveDt = inSOI ? 2 : earthDt;
+      const r        = Math.sqrt(pos.x * pos.x + pos.y * pos.y);
 
-      const moonRelPos = inSOI ? { x: pos.x - moonPos.x, y: pos.y - moonPos.y } : undefined;
-      path.push({ pos: vec2.clone(pos), vel: vec2.clone(vel), t, inMoonSOI: inSOI, moonRelPos });
+      // Adaptive timestep: clamp so the rocket moves at most 5 % of its local
+      // orbital radius per step.  This prevents integration blow-up near the
+      // periapsis of highly eccentric orbits where a coarse earthDt would cause
+      // the rocket to "jump through" the planet in a single step.
+      let effectiveDt: number;
+      if (inSOI) {
+        effectiveDt = 2;
+      } else {
+        const speed = Math.sqrt(vel.x * vel.x + vel.y * vel.y);
+        const periDt = speed > 0 ? 0.05 * r / speed : earthDt;
+        effectiveDt  = Math.min(earthDt, Math.max(1, periDt));
+      }
 
-      const r = vec2.length(pos);
-      if (r < R_EARTH)  break;        // Earth impact
-      if (moonDist < R_MOON) break;   // Lunar impact
+      // Reuse existing TrajPoint object; allocate only when pool needs to grow.
+      let pt = pool[count];
+      if (pt === undefined) {
+        pt = { pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, t: 0, inMoonSOI: false };
+        pool.push(pt);
+      }
+      pt.pos.x = pos.x; pt.pos.y = pos.y;
+      pt.vel.x = vel.x; pt.vel.y = vel.y;
+      pt.t = t;
+      pt.inMoonSOI = inSOI;
+      if (inSOI) {
+        if (!pt.moonRelPos) pt.moonRelPos = { x: 0, y: 0 };
+        pt.moonRelPos.x = dx;
+        pt.moonRelPos.y = dy;
+      } else {
+        pt.moonRelPos = undefined;
+      }
+      count++;
 
-      // N-body gravity: Earth + Moon act simultaneously at all times.
-      // Earth gravity
+      if (r < R_EARTH)  break;
+      if (moonDist < R_MOON) break;
+
+      // N-body gravity: Earth + Moon simultaneously
       const earthGMag = MU_EARTH / (r * r);
       vel.x += -(pos.x / r) * earthGMag * effectiveDt;
       vel.y += -(pos.y / r) * earthGMag * effectiveDt;
-      // Moon gravity
       if (moonDist > 0) {
         const moonGMag = MU_MOON / (moonDist * moonDist);
         vel.x += -(dx / moonDist) * moonGMag * effectiveDt;
         vel.y += -(dy / moonDist) * moonGMag * effectiveDt;
       }
 
-      // Orbit-angle termination (keeps prediction to ~1 orbit, avoids infinite loops)
       if (inSOI) {
         const moonRelAngle = Math.atan2(dy, dx);
         if (!isNaN(moonPrevAngle)) {
@@ -346,7 +378,8 @@ export class MapView {
       elapsed += effectiveDt;
     }
 
-    return path;
+    pool.length = count;
+    return pool;
   }
 
   /** Find the path index whose time is closest to the given mission time. */
@@ -390,9 +423,9 @@ export class MapView {
       const orb    = computeOrbitalElements(base.pos, newVel);
       const period = isFinite(orb.period) && orb.period > 0 ? orb.period : 4 * 86_400;
       pnTime    = Math.min(period * 2.5, 365 * 86_400);
-      pnEarthDt = Math.max(10, Math.ceil(pnTime / 1_400));
+      pnEarthDt = Math.max(10, period / 200);
     }
-    this.postNodePath        = this._predictPath(base.pos, newVel, base.t, pnTime, pnEarthDt);
+    this.postNodePath        = this._predictPath(this._pnPool, base.pos, newVel, base.t, pnTime, pnEarthDt);
     this._postNodeEncounter  = this._findEncounter(this.postNodePath);
   }
 
@@ -679,48 +712,57 @@ export class MapView {
   private _drawOrbMarkers(path: TrajPoint[], moonPosNow: Vec2): void {
     if (path.length < 2) return;
 
-    const soiPts   = path.filter(p =>  p.inMoonSOI);
-    const earthPts = path.filter(p => !p.inMoonSOI);
+    // Single pass: split SOI vs Earth points without allocating two filtered arrays
+    let soiCount = 0, earthCount = 0;
+    let minD = Infinity, maxD = -Infinity;
+    let minRel: Vec2 = { x: 0, y: 0 }, maxRel: Vec2 = { x: 0, y: 0 };
+    let minR = Infinity, maxR = -Infinity;
+    let minPos = path[0].pos, maxPos = path[0].pos;
+    let firstEarthPos: Vec2 | null = null;
 
-    // Moon-relative Pe/Ap when majority of path is in Moon SOI
-    if (soiPts.length > earthPts.length && soiPts.length > 4) {
-      let minD = Infinity, maxD = -Infinity;
-      let minRel: Vec2 = { x: 0, y: 0 }, maxRel: Vec2 = { x: 0, y: 0 };
-      for (const pt of soiPts) {
-        if (!pt.moonRelPos) continue;
-        const d = Math.hypot(pt.moonRelPos.x, pt.moonRelPos.y);
-        if (d < minD) { minD = d; minRel = pt.moonRelPos; }
-        if (d > maxD) { maxD = d; maxRel = pt.moonRelPos; }
+    for (const pt of path) {
+      if (pt.inMoonSOI) {
+        soiCount++;
+        if (pt.moonRelPos) {
+          const d = Math.hypot(pt.moonRelPos.x, pt.moonRelPos.y);
+          if (d < minD) { minD = d; minRel = pt.moonRelPos; }
+          if (d > maxD) { maxD = d; maxRel = pt.moonRelPos; }
+        }
+      } else {
+        earthCount++;
+        if (firstEarthPos === null) { firstEarthPos = pt.pos; minPos = pt.pos; maxPos = pt.pos; }
+        const r = vec2.length(pt.pos);
+        if (r < minR) { minR = r; minPos = pt.pos; }
+        if (r > maxR) { maxR = r; maxPos = pt.pos; }
       }
+    }
+
+    if (soiCount > earthCount && soiCount > 4) {
       this._drawOrbMarkerMoon(minRel, moonPosNow, 'Pe', THEME.warning);
       this._drawOrbMarkerMoon(maxRel, moonPosNow, 'Ap', THEME.accent);
       return;
     }
 
-    if (earthPts.length < 2) return;
-    let minR = Infinity, maxR = -Infinity;
-    let minPos = earthPts[0].pos, maxPos = earthPts[0].pos;
-    for (const pt of earthPts) {
-      const r = vec2.length(pt.pos);
-      if (r < minR) { minR = r; minPos = pt.pos; }
-      if (r > maxR) { maxR = r; maxPos = pt.pos; }
-    }
+    if (earthCount < 2 || firstEarthPos === null) return;
+    // minPos / maxPos already found in the single pass above
     this._drawOrbMarker(minPos, 'Pe', THEME.warning);
     this._drawOrbMarker(maxPos, 'Ap', THEME.accent);
   }
 
   private _drawOrbMarkersPost(path: TrajPoint[]): void {
     if (path.length < 2) return;
-    const earthPts = path.filter(p => !p.inMoonSOI);
-    if (earthPts.length < 2) return;
 
     let minR = Infinity, maxR = -Infinity;
-    let minPos = earthPts[0].pos, maxPos = earthPts[0].pos;
-    for (const pt of earthPts) {
+    let minPos: Vec2 | null = null, maxPos: Vec2 | null = null;
+    let earthCount = 0;
+    for (const pt of path) {
+      if (pt.inMoonSOI) continue;
+      earthCount++;
       const r = vec2.length(pt.pos);
       if (r < minR) { minR = r; minPos = pt.pos; }
       if (r > maxR) { maxR = r; maxPos = pt.pos; }
     }
+    if (earthCount < 2 || minPos === null || maxPos === null) return;
     this._drawOrbMarker(minPos, 'Pe', '#ffcc00');
     this._drawOrbMarker(maxPos, 'Ap', '#ffaa00');
   }
@@ -1132,37 +1174,98 @@ export class MapView {
     const ctx    = this.ctx;
     const centre = this._w2s({ x: 0, y: 0 });
 
-    // Include Moon orbit altitude as a reference ring
     const moonOrbitAlt = MOON_ORBIT_RADIUS - R_EARTH;
-    const altitudes = [100_000, 500_000, 1_000_000, 3_000_000, 10_000_000, moonOrbitAlt];
 
-    ctx.setLineDash([4, 8]);
-    ctx.lineWidth = 0.5;
+    // Named reference rings: label, altitude (m), optional moon flag
+    const RINGS: { alt: number; label: string; moon?: true }[] = [
+      { alt: 100_000,    label: 'Kármán  100 km' },
+      { alt: 500_000,    label: '500 km'          },
+      { alt: 1_000_000,  label: '1 Mm'            },
+      { alt: 3_000_000,  label: '3 Mm'            },
+      { alt: 10_000_000, label: '10 Mm'           },
+      { alt: moonOrbitAlt, label: 'Moon orbit', moon: true },
+    ];
+
+    // ── Post-node orbit range ──────────────────────────────────────────────
+    // If a maneuver node is set, compute planned orbit Ap/Pe so we can light
+    // up the rings that fall inside the planned orbit.
+    let pnPe = -Infinity, pnAp = Infinity;
+    let pnHasOrbit = false;
+    if (this.postNodePath.length > 0) {
+      const pt0 = this.postNodePath[0];
+      if (!pt0.inMoonSOI) {
+        const orb = computeOrbitalElements(pt0.pos, pt0.vel);
+        if (isFinite(orb.periAlt)) {
+          pnPe = orb.periAlt;
+          pnAp = isFinite(orb.apoAlt) ? orb.apoAlt : Infinity;
+          pnHasOrbit = true;
+        }
+      }
+    }
+
+    // Find the earth ring index closest to a given altitude
+    const earthRings = RINGS.filter(r => !r.moon);
+    const closestRingTo = (target: number): number => {
+      let best = 0, bestD = Infinity;
+      for (let i = 0; i < earthRings.length; i++) {
+        const d = Math.abs(earthRings[i].alt - target);
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      return best;
+    };
+    const apRingIdx = pnHasOrbit && isFinite(pnAp)  ? closestRingTo(pnAp) : -1;
+    const peRingIdx = pnHasOrbit && pnPe > -Infinity ? closestRingTo(pnPe) : -1;
+
     ctx.textAlign = 'left';
-    ctx.font = '10px Courier New';
 
-    for (const alt of altitudes) {
-      const r          = (R_EARTH + alt) / this.eMpp;
-      const isMoonOrbit = alt === moonOrbitAlt;
+    for (let i = 0; i < RINGS.length; i++) {
+      const { alt, label, moon } = RINGS[i];
+      const r = (R_EARTH + alt) / this.eMpp;
+      const earthIdx = moon ? -1 : earthRings.findIndex(x => x.alt === alt);
+
+      const isAp    = earthIdx >= 0 && earthIdx === apRingIdx;
+      const isPe    = earthIdx >= 0 && earthIdx === peRingIdx;
+      const inBand  = pnHasOrbit && !moon && alt >= pnPe && (pnAp === Infinity || alt <= pnAp);
+
+      // Ring
+      ctx.setLineDash([4, 8]);
       ctx.beginPath();
       ctx.arc(centre.x, centre.y, r, 0, Math.PI * 2);
-      ctx.strokeStyle = isMoonOrbit
-        ? 'rgba(100,100,140,0.35)'
-        : 'rgba(30,80,120,0.5)';
+      if (isAp) {
+        ctx.strokeStyle = 'rgba(80,220,120,0.80)';
+        ctx.lineWidth   = 1.4;
+      } else if (isPe) {
+        ctx.strokeStyle = 'rgba(255,200,60,0.80)';
+        ctx.lineWidth   = 1.4;
+      } else if (inBand) {
+        ctx.strokeStyle = 'rgba(30,140,210,0.65)';
+        ctx.lineWidth   = 0.8;
+      } else if (moon) {
+        ctx.strokeStyle = 'rgba(100,100,140,0.35)';
+        ctx.lineWidth   = 0.5;
+      } else {
+        ctx.strokeStyle = 'rgba(30,80,120,0.50)';
+        ctx.lineWidth   = 0.5;
+      }
       ctx.stroke();
+      ctx.setLineDash([]);
 
-      const labelX   = centre.x + r + 4;
-      const labelStr = alt >= 1_000_000
-        ? isMoonOrbit ? 'Moon orbit' : `${(alt / 1_000_000).toFixed(0)} Mm`
-        : `${(alt / 1000).toFixed(0)} km`;
-      ctx.fillStyle = isMoonOrbit
-        ? 'rgba(120,120,160,0.7)'
-        : 'rgba(60,110,160,0.8)';
-      ctx.fillText(labelStr, labelX, centre.y - 4);
+      // Label (right-side equatorial crossing of each ring)
+      const labelX = centre.x + r + 4;
+      const suffix  = isAp ? '  ← Ap' : isPe ? '  ← Pe' : '';
+      ctx.font      = (isAp || isPe) ? 'bold 10px Courier New' : '10px Courier New';
+      ctx.fillStyle = isAp
+        ? 'rgba(80,230,120,0.95)'
+        : isPe
+        ? 'rgba(255,210,60,0.95)'
+        : moon
+        ? 'rgba(120,120,160,0.70)'
+        : inBand
+        ? 'rgba(80,160,220,0.90)'
+        : 'rgba(60,110,160,0.80)';
+      ctx.fillText(label + suffix, labelX, centre.y - 4);
     }
-    ctx.setLineDash([]);
 
-    // Suppress unused-parameter warning
     void missionTime;
   }
 

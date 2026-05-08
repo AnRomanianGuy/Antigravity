@@ -29,12 +29,37 @@ game.init();
 
 // ─── Game Loop ────────────────────────────────────────────────────────────────
 
-/**
- * The rAF callback.
- * We capture `game` in a closure so TypeScript knows it is never null here.
- */
+// Non-null reference captured after the null-guard above.
+const cvs: HTMLCanvasElement = canvas;
+
+let _crashed = false;
+
 function loop(timestamp: number): void {
-  game.loop(timestamp);
+  if (_crashed) return;
+  try {
+    game.loop(timestamp);
+  } catch (err) {
+    _crashed = true;
+    console.error('[Antigravity] Unhandled exception in game loop:', err);
+    // Draw a minimal error overlay so the screen doesn't go blank.
+    const ctx = cvs.getContext('2d');
+    if (ctx) {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, cvs.width, cvs.height);
+      ctx.fillStyle = '#ff4444';
+      ctx.font = 'bold 22px Courier New';
+      ctx.textAlign = 'center';
+      ctx.fillText('RUNTIME ERROR — see browser console', cvs.width / 2, cvs.height / 2 - 16);
+      ctx.fillStyle = '#aaa';
+      ctx.font = '14px Courier New';
+      const msg = err instanceof Error ? err.message : String(err);
+      ctx.fillText(msg.slice(0, 120), cvs.width / 2, cvs.height / 2 + 16);
+      ctx.fillStyle = '#666';
+      ctx.font = '12px Courier New';
+      ctx.fillText('Reload the page to restart.', cvs.width / 2, cvs.height / 2 + 42);
+    }
+    return;
+  }
   requestAnimationFrame(loop);
 }
 

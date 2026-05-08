@@ -197,6 +197,14 @@ export class Game {
       this.throttle        = 0;
       this.rocket.body.mass = this.rocket.getTotalMass();
       this.physics.step(this.rocket.body, this.rocket, bigDt);
+      // Guard: if position became non-finite (numerical blow-up at large dt), reset warp
+      if (!isFinite(this.rocket.body.pos.x) || !isFinite(this.rocket.body.pos.y)) {
+        this.rocket.body.pos.x = isFinite(this.rocket.body.pos.x) ? this.rocket.body.pos.x : 0;
+        this.rocket.body.pos.y = isFinite(this.rocket.body.pos.y) ? this.rocket.body.pos.y : 6_371_001;
+        this.rocket.body.vel.x = 0;
+        this.rocket.body.vel.y = 0;
+        this.warpIndex = 0;
+      }
     } else {
       this.accumulator += rawDt * warpFactor;
       const maxSteps = MAX_PHYSICS_STEPS * warpFactor;

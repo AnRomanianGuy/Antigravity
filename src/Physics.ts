@@ -74,7 +74,7 @@ export function getMoonVelocity(t: number): Vec2 {
 }
 
 /** Reaction wheel max torque (N·m) — from command pod SAS */
-const REACTION_WHEEL_TORQUE = 200_000;
+const REACTION_WHEEL_TORQUE = 2_000_000;
 
 /** Engine gimbal torque coefficient (N·m) */
 const GIMBAL_TORQUE_COEFF = 60_000;
@@ -123,6 +123,7 @@ export interface PhysicsFrame {
 
 export class PhysicsEngine {
   private atmo: Atmosphere;
+  private _heatBuf: { slotIndex: number; isDestroyed: boolean; def: any; currentTemperature: number; heatDamage: number; currentMass: number }[] = [];
 
   /** Accumulated mission elapsed time (seconds) */
   missionTime = 0;
@@ -214,7 +215,8 @@ export class PhysicsEngine {
 
     let thrustMag = 0;
     let massFlow  = 0;
-    for (const p of rocket.parts.filter(pp => pp.isThrusting)) {
+    for (const p of rocket.parts) {
+      if (!p.isThrusting) continue;
       const thr = p.def.ignoreThrottle ? 1 : rocket.throttle;
 
       // Vacuum fraction: pressure-based for normal engines, altitude-based for
@@ -326,9 +328,13 @@ export class PhysicsEngine {
       // Order parts from windward end to leeward end
       // noseExposure < 0 → nose (high slot) is first to heat → sort high-slot first
       // noseExposure > 0 → tail (slot 0) is first → sort low-slot first
-      const windwardFirst = noseExposure < 0
-        ? [...rocket.parts].sort((a, b) => b.slotIndex - a.slotIndex)
-        : [...rocket.parts].sort((a, b) => a.slotIndex - b.slotIndex);
+      // Reuse scratch buffer to avoid spread-copy allocation every physics step
+      const buf = this._heatBuf;
+      buf.length = 0;
+      for (const p of rocket.parts) buf.push(p);
+      if (noseExposure < 0) buf.sort((a, b) => b.slotIndex - a.slotIndex);
+      else                  buf.sort((a, b) => a.slotIndex - b.slotIndex);
+      const windwardFirst = buf;
 
       let passthrough = exposure;  // angular factor reduces effective heat
 
@@ -432,11 +438,13 @@ export class PhysicsEngine {
     dt: number,
     hasPod: boolean,
   ): void {
-    const torque = hasPod ? REACTION_WHEEL_TORQUE : GIMBAL_TORQUE_COEFF;
+    const baseTorque = hasPod ? REACTION_WHEEL_TORQUE : GIMBAL_TORQUE_COEFF;
     // Moment of inertia approximation: I ≈ m · L² / 12 (uniform rod)
     const L = 30;   // approximate rocket length in metres
     const I = Math.max(body.mass * L * L / 12, 1);
-    body.angVel += (torque / I) * direction * dt;
+    // Clamp angular acceleration so all rocket sizes feel responsive
+    const alpha = Math.min(8.0, Math.max(0.3, baseTorque / I));
+    body.angVel += alpha * direction * dt;
   }
 
   /**

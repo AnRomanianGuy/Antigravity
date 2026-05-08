@@ -41,6 +41,16 @@ function generateStars(count: number, seed = 42): Star[] {
 
 const STARS = generateStars(600);
 
+// Pre-bucket stars by brightness into 5 groups so the entire starfield can be
+// drawn with 5 beginPath/fill calls instead of 600 individual ones.
+const STAR_BUCKETS: { stars: Star[]; bright: number }[] = Array.from({ length: 5 }, (_, i) => ({
+  stars: [],
+  bright: (i + 0.5) / 5,
+}));
+for (const s of STARS) {
+  STAR_BUCKETS[Math.min(4, Math.floor(s.bright * 5))].stars.push(s);
+}
+
 // ─── Camera ────────────────────────────────────────────────────────────────────
 
 interface Camera {
@@ -95,7 +105,7 @@ export class Renderer {
     const viewHeightM = alt < 100_000
       ? 20_000 + alt * alt / 50_000                         // original near-surface formula
       : 220_000 * Math.pow(alt / 100_000, 0.6);             // power-law: stays sane at any altitude
-    const mpp = viewHeightM / H;
+    const mpp = isFinite(viewHeightM) && H > 0 ? viewHeightM / H : 1000;
 
     const camera: Camera = {
       focus:          vec2.clone(rocket.body.pos),
@@ -103,10 +113,13 @@ export class Renderer {
     };
 
     // ── Background: sky colour shifts with altitude ─────────────────────────
-    this._drawSkyBackground(alt);
+    // In Moon SOI the sky is always space (no lunar atmosphere); use Earth
+    // altitude so we don't accidentally paint a blue sky at 50 km Moon altitude.
+    const skyAlt = frame.inMoonSOI ? 200_000 : frame.altitude;
+    this._drawSkyBackground(skyAlt);
 
     // ── Stars: fade in above ~10 km, fully visible above 30 km ────────────
-    const starFade = alt < 30_000 ? alt / 30_000 : 1.0;
+    const starFade = skyAlt < 30_000 ? skyAlt / 30_000 : 1.0;
     this._drawStars(camera, starFade);
 
     // ── Earth ─────────────────────────────────────────────────────────────
@@ -128,22 +141,30 @@ export class Renderer {
     // Scale: show rocket at a physical width of ~3 m equivalent, minimum 1.0px/nominal
     const partScale = Math.max(3 / mpp, 1.0);
 
+    // Compute stack dimensions once — shared by all sub-draw functions this frame
+    let stackH = 0, stackMaxW = 44 * partScale;
+    for (const p of rocket.parts) {
+      if (!p.def.radialMount) stackH += p.def.renderH * partScale;
+      const pw = p.def.renderW * partScale;
+      if (pw > stackMaxW) stackMaxW = pw;
+    }
+
     // Exhaust plume (behind rocket body)
     if (rocket.isThrusting && throttle > 0) {
-      this._drawExhaustPlume(rocket, partScale, throttle);
+      this._drawExhaustPlume(rocket, partScale, throttle, stackH);
     }
 
     // Rocket parts
-    this._drawRocketParts(rocket, partScale);
+    this._drawRocketParts(rocket, partScale, stackH);
 
     // Ascent aerodynamic compression (q-based: white/blue streaks, orange sparks at extreme q)
     if (frame.dynamicPressure > 5_000 && Math.abs(frame.noseExposure) > 0.05) {
-      this._drawAscentAero(rocket, partScale, frame);
+      this._drawAscentAero(rocket, partScale, frame, stackH, stackMaxW);
     }
 
     // Thermal heating / reentry plasma — only above ~Mach 2.5 at sea level (heatFlux >50k)
     if (frame.heatFlux > 50_000 && Math.abs(frame.noseExposure) > 0.05) {
-      this._drawAeroHeating(rocket, partScale, frame);
+      this._drawAeroHeating(rocket, partScale, frame, stackH, stackMaxW);
     }
 
     ctx.restore();
@@ -377,12 +398,17 @@ export class Renderer {
     const py = (cam.focus.y / R_EARTH) * 80 % H;
 
     ctx.save();
-    for (const s of STARS) {
-      const sx = ((s.x * W + px) % W + W) % W;
-      const sy = ((s.y * H + py) % H + H) % H;
+    // Batch by brightness bucket: 5 fill calls instead of 600
+    for (const bucket of STAR_BUCKETS) {
+      const alpha = Math.round(bucket.bright * opacity * 100) / 100;
+      ctx.fillStyle = `rgba(255,255,255,${alpha})`;
       ctx.beginPath();
-      ctx.arc(sx, sy, s.r, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(255,255,255,${(s.bright * opacity).toFixed(2)})`;
+      for (const s of bucket.stars) {
+        const sx = ((s.x * W + px) % W + W) % W;
+        const sy = ((s.y * H + py) % H + H) % H;
+        ctx.moveTo(sx + s.r, sy);
+        ctx.arc(sx, sy, s.r, 0, Math.PI * 2);
+      }
       ctx.fill();
     }
     ctx.restore();
@@ -399,11 +425,10 @@ export class Renderer {
    * Draw all parts centred at origin (0,0) in local rocket space.
    * Radial parts (SRBs) are drawn offset left and right with struts.
    */
-  private _drawRocketParts(rocket: Rocket, scale: number): void {
+  private _drawRocketParts(rocket: Rocket, scale: number, totalH: number): void {
     const ctx = this.ctx;
     if (rocket.parts.length === 0) return;
 
-    const totalH = rocket.parts.reduce((s, p) => p.def.radialMount ? s : s + p.def.renderH * scale, 0);
     let yBottom = totalH / 2;
 
     const mainHW  = Renderer.STACK_HALF_W  * scale;
@@ -756,9 +781,8 @@ export class Renderer {
     ctx.fill();
   }
 
-  private _drawExhaustPlume(rocket: Rocket, scale: number, throttle: number): void {
-    const ctx     = this.ctx;
-    const totalH  = rocket.parts.reduce((s, p) => p.def.radialMount ? s : s + p.def.renderH * scale, 0);
+  private _drawExhaustPlume(rocket: Rocket, scale: number, throttle: number, totalH: number): void {
+    const ctx         = this.ctx;
     const stackBottom = totalH / 2;
 
     const mainHW = Renderer.STACK_HALF_W * scale;
@@ -839,7 +863,7 @@ export class Renderer {
    *  25–45 kPa  : stronger streaks + edge lines
    *  45–80 kPa  : haze turns orange, streaks turn orange, sparks appear
    */
-  private _drawAscentAero(rocket: Rocket, scale: number, frame: PhysicsFrame): void {
+  private _drawAscentAero(rocket: Rocket, scale: number, frame: PhysicsFrame, totalH: number, maxW: number): void {
     const q = frame.dynamicPressure;
     if (q < Renderer.Q_STREAK_START) return;
 
@@ -850,9 +874,7 @@ export class Renderer {
     const ctx = this.ctx;
     const t   = this.time;
 
-    const totalH = rocket.parts.reduce((s, p) => p.def.radialMount ? s : s + p.def.renderH * scale, 0);
-    const halfH  = totalH / 2;
-    const maxW   = rocket.parts.reduce((m, p) => Math.max(m, p.def.renderW * scale), 44 * scale);
+    const halfH = totalH / 2;
 
     // noseExp < 0 → nose (top, localY = -halfH) is windward during ascent
     const noseIsWindward = noseExp < 0;
@@ -869,7 +891,7 @@ export class Renderer {
     const frand = (seed: number): number => {
       let s = (seed ^ 0xf00dcafe) >>> 0;
       s = Math.imul(s ^ (s >>> 16), 0x45d9f3b) >>> 0;
-      return (s ^ (s >>> 16)) / 0xffffffff;
+      return ((s ^ (s >>> 16)) >>> 0) / 0xffffffff;
     };
 
     ctx.save();
@@ -998,17 +1020,14 @@ export class Renderer {
    * noseExposure < 0 → nose (local y = -halfH) is windward.
    * noseExposure > 0 → tail (local y = +halfH) is windward.
    */
-  private _drawAeroHeating(rocket: Rocket, scale: number, frame: PhysicsFrame): void {
+  private _drawAeroHeating(rocket: Rocket, scale: number, frame: PhysicsFrame, totalH: number, maxW: number): void {
     const ctx       = this.ctx;
     const t         = this.time;
     const intensity = Math.min(frame.heatFlux / MAX_HEAT_FLUX, 1.0);
     const exposure  = Math.abs(frame.noseExposure);
     if (intensity < 0.01 || exposure < 0.05) return;
 
-    const totalH = rocket.parts.reduce((s, p) => p.def.radialMount ? s : s + p.def.renderH * scale, 0);
-    const halfH  = totalH / 2;
-    // Widest part — governs glow spread
-    const maxW   = rocket.parts.reduce((m, p) => Math.max(m, p.def.renderW * scale), 44 * scale);
+    const halfH = totalH / 2;
 
     // noseExposure < 0 → nose (top, localY=-halfH) is windward
     const noseIsWindward = frame.noseExposure < 0;
@@ -1055,7 +1074,7 @@ export class Renderer {
     const frand = (seed: number) => {
       let s = (seed ^ 0xdeadbeef) >>> 0;
       s = Math.imul(s ^ (s >>> 16), 0x45d9f3b) >>> 0;
-      return (s ^ (s >>> 16)) / 0xffffffff;
+      return ((s ^ (s >>> 16)) >>> 0) / 0xffffffff;
     };
 
     for (let i = 0; i < numStreaks; i++) {
@@ -1459,7 +1478,7 @@ export class Renderer {
     ctx.fillText('◀', this.warpDownBtn.x + btnW / 2, this.warpDownBtn.y + 19);
 
     // ▶ increase button
-    const atMax = warpFactor === 10;
+    const atMax = warpFactor === 10000;
     ctx.fillStyle = atMax ? 'rgba(255,255,255,0.08)' : THEME.accentDim;
     this._roundRect(this.warpUpBtn.x, this.warpUpBtn.y, btnW, btnH, 4);
     ctx.fill();
