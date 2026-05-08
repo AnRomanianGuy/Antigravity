@@ -310,12 +310,21 @@ export class Game {
           this.rocket.body.angVel = 0;
           aligned = true;
         } else if (!this.input.rotateLeft && !this.input.rotateRight) {
-          // 1× warp, no manual override: bang-bang near target, proportional far away
+          // Angular-velocity setpoint controller.
+          // maxAngVel is derived from the rocket's actual braking alpha so the rocket
+          // can always stop within ~1.5° — prevents the overshoot oscillation that
+          // made the old bang-bang controller unreliable after the torque increase.
           if (Math.abs(angleDiff) > 0.005) {
-            // Full torque toward target; proportional only in final 0.15 rad to avoid overshoot
-            const dir = Math.abs(angleDiff) > 0.15
-              ? Math.sign(angleDiff)
-              : angleDiff / 0.15;
+            const alpha = this.physics.getRotationAlpha(
+              this.rocket.body, this.rocket.hasCommandPod,
+            );
+            // sqrt(2 * alpha * stop_angle) gives the velocity that decelerates to 0
+            // over stop_angle. 0.8 safety margin keeps overshoot < 1.5°.
+            const maxAngVel = Math.sqrt(2.0 * alpha * 0.04) * 0.8;
+            const desiredAngVel = Math.sign(angleDiff)
+              * Math.min(Math.abs(angleDiff) * 8.0, maxAngVel);
+            const velError = desiredAngVel - this.rocket.body.angVel;
+            const dir = Math.max(-1.0, Math.min(1.0, velError * 3.0 / maxAngVel));
             this.physics.applyRotation(this.rocket.body, dir, dt, this.rocket.hasCommandPod);
           } else {
             // Inside dead-zone — kill residual spin quickly

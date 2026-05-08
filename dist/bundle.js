@@ -684,6 +684,16 @@
       body.angVel += alpha * direction * dt;
     }
     /**
+     * Effective angular acceleration (rad/s²) that `applyRotation` will produce for this body.
+     * Used by the autopilot to compute a safe maximum angular velocity.
+     */
+    getRotationAlpha(body, hasPod) {
+      const baseTorque = hasPod ? REACTION_WHEEL_TORQUE : GIMBAL_TORQUE_COEFF;
+      const L = 30;
+      const I = Math.max(body.mass * L * L / 12, 1);
+      return Math.min(8, Math.max(0.3, baseTorque / I));
+    }
+    /**
      * Quick gravity magnitude at a given altitude (m/s²).
      * Useful for Isp conversions in vacuum vs. atmosphere.
      */
@@ -4807,7 +4817,14 @@
             aligned = true;
           } else if (!this.input.rotateLeft && !this.input.rotateRight) {
             if (Math.abs(angleDiff) > 5e-3) {
-              const dir = Math.abs(angleDiff) > 0.15 ? Math.sign(angleDiff) : angleDiff / 0.15;
+              const alpha = this.physics.getRotationAlpha(
+                this.rocket.body,
+                this.rocket.hasCommandPod
+              );
+              const maxAngVel = Math.sqrt(2 * alpha * 0.04) * 0.8;
+              const desiredAngVel = Math.sign(angleDiff) * Math.min(Math.abs(angleDiff) * 8, maxAngVel);
+              const velError = desiredAngVel - this.rocket.body.angVel;
+              const dir = Math.max(-1, Math.min(1, velError * 3 / maxAngVel));
               this.physics.applyRotation(this.rocket.body, dir, dt, this.rocket.hasCommandPod);
             } else {
               this.rocket.body.angVel *= Math.pow(0.5, dt * 60);
