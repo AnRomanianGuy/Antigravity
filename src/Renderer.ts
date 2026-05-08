@@ -88,10 +88,13 @@ export class Renderer {
     const { H } = this;
 
     // ── Camera / zoom ──────────────────────────────────────────────────────
-    // Use altitude above nearest body so lunar orbit zooms correctly.
-    // Without this, alt ≈ 378 Mm at Moon distance → viewHeightM ≈ 2.86e12 (black screen).
+    // Use altitude above nearest body so lunar-orbit zoom is sane.
+    // The quadratic formula explodes above ~100 km, so switch to a power-law
+    // at that breakpoint (continuous: both sides equal 220 000 m at 100 km).
     const alt = frame.altAboveNearest;
-    const viewHeightM = 20_000 + alt * alt / 50_000;
+    const viewHeightM = alt < 100_000
+      ? 20_000 + alt * alt / 50_000                         // original near-surface formula
+      : 220_000 * Math.pow(alt / 100_000, 0.6);             // power-law: stays sane at any altitude
     const mpp = viewHeightM / H;
 
     const camera: Camera = {
@@ -1538,6 +1541,7 @@ export class Renderer {
     rocket: Rocket,
     node: { time: number; progradeDV: number; normalDV: number; executed: boolean } | null,
     missionTime: number,
+    dvRemaining: number | null = null,
   ): void {
     if (!node || node.executed) return;
 
@@ -1546,9 +1550,10 @@ export class Renderer {
 
     const ctx = this.ctx;
     const { W, H } = this;
-    const timeToNode = node.time - missionTime;
+    const timeToNode    = node.time - missionTime;
+    const isExecuting   = timeToNode <= 0;
 
-    // ── Compute desired burn direction ──────────────────────────────────────
+    // ── Compute desired burn direction (always needed for alignment circle) ──
     const vel = rocket.body.vel;
     const pos = rocket.body.pos;
     const speed = Math.hypot(vel.x, vel.y);
@@ -1562,52 +1567,105 @@ export class Renderer {
     const burnLen = Math.hypot(burnX, burnY);
     const burnDir = burnLen > 0 ? { x: burnX / burnLen, y: burnY / burnLen } : prograde;
 
-    // Desired heading = atan2(burnDir.x, burnDir.y)  (angle=0 → nose points +Y)
     const desiredAngle = Math.atan2(burnDir.x, burnDir.y);
     const currentAngle = rocket.body.angle;
     let angleDiff = desiredAngle - currentAngle;
     while (angleDiff >  Math.PI) angleDiff -= 2 * Math.PI;
     while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
-    const aligned = Math.abs(angleDiff) < 0.05; // ~3°
+    const aligned = Math.abs(angleDiff) < 0.05;
 
     // ── Panel layout ───────────────────────────────────────────────────────
-    const pw = 260, ph = 116;
+    const pw = 260, ph = isExecuting ? 130 : 116;
     const px = (W - pw) / 2;
-    const py = H / 2 - ph - 20;   // just above screen centre
+    const py = H / 2 - ph - 20;
 
     this._drawPanel(px, py, pw, ph);
-
-    // Header
-    ctx.fillStyle = timeToNode < 30 ? THEME.danger : THEME.warning;
-    ctx.font = 'bold 12px Courier New';
-    ctx.textAlign = 'center';
-    ctx.fillText('▶ MANEUVER NODE', W / 2, py + 17);
-
-    // ── Left text info ─────────────────────────────────────────────────────
     const leftX = px + 12;
-    const rows: [string, string, string][] = [
-      ['ΔV',  `${totalDV.toFixed(0)} m/s`,  THEME.accent],
-      ['T−',  timeToNode <= 0 ? 'BURN NOW' : this._fmtNodeTime(timeToNode),
-              timeToNode < 30 ? THEME.danger : THEME.text],
-    ];
 
-    rows.forEach(([label, value, color], i) => {
-      const ry = py + 36 + i * 20;
+    if (isExecuting) {
+      // ── Executing burn UI ────────────────────────────────────────────────
+      const almostDone = dvRemaining !== null && dvRemaining < 30;
+
+      ctx.fillStyle = almostDone ? THEME.danger : '#ff8800';
+      ctx.font = 'bold 12px Courier New';
+      ctx.textAlign = 'center';
+      ctx.fillText('● EXECUTING BURN', W / 2, py + 17);
+
+      // ΔV remaining
       ctx.fillStyle = THEME.textDim;
       ctx.font = '10px Courier New';
       ctx.textAlign = 'left';
-      ctx.fillText(label, leftX, ry);
-      ctx.fillStyle = color;
-      ctx.fillText(value, leftX + 36, ry);
-    });
+      ctx.fillText('ΔV rem', leftX, py + 38);
+      ctx.fillStyle = almostDone ? THEME.danger : THEME.accent;
+      ctx.font = 'bold 15px Courier New';
+      ctx.fillText(
+        dvRemaining !== null ? `${dvRemaining.toFixed(0)} m/s` : '--- m/s',
+        leftX + 52, py + 38,
+      );
 
-    // Heading error text
-    const errDeg = (angleDiff * 180 / Math.PI).toFixed(1);
-    const alignStr = aligned ? '✓ ALIGNED' : `HDG ${Number(errDeg) > 0 ? '+' : ''}${errDeg}°`;
-    ctx.fillStyle = aligned ? THEME.success : THEME.warning;
-    ctx.font = 'bold 10px Courier New';
-    ctx.textAlign = 'left';
-    ctx.fillText(alignStr, leftX, py + 80);
+      // Total ΔV (dimmed)
+      ctx.fillStyle = THEME.textDim;
+      ctx.font = '10px Courier New';
+      ctx.fillText(`of ${totalDV.toFixed(0)} m/s`, leftX + 52, py + 54);
+
+      // Progress bar
+      if (dvRemaining !== null) {
+        const progress = Math.min(1, 1 - dvRemaining / totalDV);
+        const bx = leftX, by = py + 62, bw = pw - 24 - 104, bh = 8;
+        ctx.fillStyle = 'rgba(40,40,40,0.8)';
+        ctx.fillRect(bx, by, bw, bh);
+        ctx.fillStyle = almostDone ? THEME.danger : '#ff8800';
+        ctx.fillRect(bx, by, bw * progress, bh);
+        ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(bx, by, bw, bh);
+      }
+
+      // "CUT ENGINES" flash when almost done
+      if (almostDone) {
+        ctx.fillStyle = THEME.danger;
+        ctx.font = 'bold 11px Courier New';
+        ctx.textAlign = 'left';
+        ctx.fillText('▼ CUT ENGINES', leftX, py + 82);
+      } else {
+        const errDeg = (angleDiff * 180 / Math.PI).toFixed(1);
+        const alignStr = aligned ? '✓ ALIGNED' : `HDG ${Number(errDeg) > 0 ? '+' : ''}${errDeg}°`;
+        ctx.fillStyle = aligned ? THEME.success : THEME.warning;
+        ctx.font = 'bold 10px Courier New';
+        ctx.textAlign = 'left';
+        ctx.fillText(alignStr, leftX, py + 82);
+      }
+
+    } else {
+      // ── Pre-burn countdown UI ────────────────────────────────────────────
+      ctx.fillStyle = timeToNode < 30 ? THEME.danger : THEME.warning;
+      ctx.font = 'bold 12px Courier New';
+      ctx.textAlign = 'center';
+      ctx.fillText('▶ MANEUVER NODE', W / 2, py + 17);
+
+      const rows: [string, string, string][] = [
+        ['ΔV',  `${totalDV.toFixed(0)} m/s`,  THEME.accent],
+        ['T−',  timeToNode <= 0 ? 'BURN NOW' : this._fmtNodeTime(timeToNode),
+                timeToNode < 30 ? THEME.danger : THEME.text],
+      ];
+
+      rows.forEach(([label, value, color], i) => {
+        const ry = py + 36 + i * 20;
+        ctx.fillStyle = THEME.textDim;
+        ctx.font = '10px Courier New';
+        ctx.textAlign = 'left';
+        ctx.fillText(label, leftX, ry);
+        ctx.fillStyle = color;
+        ctx.fillText(value, leftX + 36, ry);
+      });
+
+      const errDeg = (angleDiff * 180 / Math.PI).toFixed(1);
+      const alignStr = aligned ? '✓ ALIGNED' : `HDG ${Number(errDeg) > 0 ? '+' : ''}${errDeg}°`;
+      ctx.fillStyle = aligned ? THEME.success : THEME.warning;
+      ctx.font = 'bold 10px Courier New';
+      ctx.textAlign = 'left';
+      ctx.fillText(alignStr, leftX, py + 80);
+    }
 
     // ── Heading alignment circle (right side) ─────────────────────────────
     const cxc = px + pw - 50;

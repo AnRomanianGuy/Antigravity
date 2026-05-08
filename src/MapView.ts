@@ -57,6 +57,8 @@ interface TrajPoint {
   t:   number;
   /** True if this point is inside the Moon's sphere of influence */
   inMoonSOI: boolean;
+  /** Position relative to Moon centre — only set when inMoonSOI */
+  moonRelPos?: Vec2;
 }
 
 // ─── Moon encounter record ────────────────────────────────────────────────────
@@ -101,9 +103,16 @@ export class MapView {
   private _nodeIdx  = 0;
 
   // ── Trajectory cache ──────────────────────────────────────────────────────
-  private cachedPath:    TrajPoint[] = [];
-  private postNodePath:  TrajPoint[] = [];
-  private pathAge = 0;
+  private cachedPath:      TrajPoint[] = [];
+  private postNodePath:    TrajPoint[] = [];
+  private pathAge          = 0;
+  private _moonPosAtRender: Vec2 = { x: 0, y: 0 };
+
+  // ── Burn execution tracking ───────────────────────────────────────────────
+  private _burnStartVel:  Vec2 | null = null;
+  private _burnTotalDV    = 0;
+  private _dvRemaining:   number | null = null;
+  private _prevTimeToNode = Infinity;
 
   // ── Encounter cache ───────────────────────────────────────────────────────
   private _encounter:         MoonEncounter | null = null;
@@ -151,33 +160,57 @@ export class MapView {
     this._drawMoon(missionTime);
     this._drawEarth();
 
-    // Refresh trajectory every 60 frames
+    // Burn state is maintained by tick() (called every frame even when map is closed)
+    const isExecutingBurn = this.node !== null && (this.node.time - missionTime) < 0;
+
+    // Current Moon position used for all SOI trajectory rendering this frame
+    const moonPosNow = getMoonPosition(missionTime);
+    this._moonPosAtRender = moonPosNow;
+
+    // Refresh trajectory every 60 frames (even during burn — shows real-time orbit change)
     this.pathAge++;
     if (this.pathAge > 60 || this.cachedPath.length === 0) {
-      // Use finer dt inside Moon SOI so the lunar orbit doesn't drift
-      const moonPosCurr  = getMoonPosition(missionTime);
+      const moonPosCurr  = moonPosNow;
       const moonDistCurr = vec2.length(vec2.sub(rocket.body.pos, moonPosCurr));
       const rocketInSOI  = moonDistCurr < MOON_SOI;
-      const predDt       = rocketInSOI ? 4   : 10;    // 4 s steps inside SOI, 10 s outside
-      const predSteps    = rocketInSOI ? 2200 : 1400; // >1 Moon orbit, or up to ~14 000 s Earth orbit
+      let predTime: number;
+      let predEarthDt: number;
+      if (rocketInSOI) {
+        // Compute orbital period in Moon-relative frame so predTime covers 2.5 lunar orbits
+        const moonVelCurr = getMoonVelocity(missionTime);
+        const relPos      = vec2.sub(rocket.body.pos, moonPosCurr);
+        const relVel      = vec2.sub(rocket.body.vel, moonVelCurr);
+        const lunarOrb    = computeOrbitalElements(relPos, relVel, MU_MOON, R_MOON);
+        const lunarPeriod = isFinite(lunarOrb.period) && lunarOrb.period > 0 ? lunarOrb.period : 8_800;
+        predTime    = Math.min(lunarPeriod * 2.5, 3 * 86_400);
+        predEarthDt = 2;
+      } else {
+        const orb    = computeOrbitalElements(rocket.body.pos, rocket.body.vel);
+        const period = isFinite(orb.period) && orb.period > 0 ? orb.period : 4 * 86_400;
+        predTime    = Math.min(period * 2.5, 4 * 86_400);   // cap at 4 days
+        predEarthDt = Math.max(10, Math.ceil(predTime / 1_400));
+      }
 
-      this.cachedPath  = this._predictPath(rocket.body.pos, rocket.body.vel, missionTime, predSteps, predDt);
+      this.cachedPath  = this._predictPath(rocket.body.pos, rocket.body.vel, missionTime, predTime, predEarthDt);
       this._encounter  = this._findEncounter(this.cachedPath);
       this.pathAge     = 0;
       if (this.node) {
         // Re-sync node index to the path point closest to the stored node time
-        // (prevents the node drifting as the rocket moves and the path shifts)
         this._nodeIdx = this._findNodeIdx(this.node.time);
-        this._recomputePostNode();
+        // During burn execution the post-node arc is frozen as a reference target;
+        // only recompute it while still pre-burn so it shows the planned orbit.
+        if (!isExecutingBurn) {
+          this._recomputePostNode();
+        }
       }
     }
 
-    this._drawTrajectory(this.cachedPath, false);
+    this._drawTrajectory(this.cachedPath, false, moonPosNow);
     if (this.node && this.postNodePath.length > 1) {
-      this._drawTrajectory(this.postNodePath, true);
+      this._drawTrajectory(this.postNodePath, true, moonPosNow);
     }
 
-    this._drawOrbMarkers(this.cachedPath);
+    this._drawOrbMarkers(this.cachedPath, moonPosNow);
     if (this.node && this.postNodePath.length > 1) {
       this._drawOrbMarkersPost(this.postNodePath);
     }
@@ -210,10 +243,37 @@ export class MapView {
     ctx.fillText('M — flight  |  Click trajectory — place node  |  Click node — delete', W / 2, 46);
   }
 
+  /** ΔV remaining in the currently executing burn, or null if no burn is active. */
+  get dvRemaining(): number | null { return this._dvRemaining; }
+
+  /**
+   * Update burn-execution state every game frame, even when the map is not visible.
+   * Must be called from Game._updateFlight() before renderBurnGuidance.
+   */
+  tick(rocket: { body: { vel: { x: number; y: number } } }, missionTime: number): void {
+    const timeToNode      = this.node ? this.node.time - missionTime : Infinity;
+    const isExecutingBurn = this.node !== null && timeToNode < 0;
+
+    if (this.node && timeToNode < 0 && this._prevTimeToNode >= 0) {
+      this._burnStartVel = { x: rocket.body.vel.x, y: rocket.body.vel.y };
+      this._burnTotalDV  = Math.hypot(this.node.progradeDV, this.node.normalDV);
+    }
+    if (!this.node || !isExecutingBurn) this._burnStartVel = null;
+    this._prevTimeToNode = timeToNode;
+
+    if (isExecutingBurn && this._burnStartVel !== null) {
+      const dx = rocket.body.vel.x - this._burnStartVel.x;
+      const dy = rocket.body.vel.y - this._burnStartVel.y;
+      this._dvRemaining = Math.max(0, this._burnTotalDV - Math.sqrt(dx * dx + dy * dy));
+    } else {
+      this._dvRemaining = null;
+    }
+  }
+
   // ─── Trajectory Prediction (patched conics) ───────────────────────────────
 
   private _predictPath(
-    startPos: Vec2, startVel: Vec2, startT: number, steps: number, dt: number,
+    startPos: Vec2, startVel: Vec2, startT: number, maxTime: number, earthDt: number,
   ): TrajPoint[] {
     const path: TrajPoint[] = [];
     let pos = vec2.clone(startPos);
@@ -227,15 +287,19 @@ export class MapView {
     let moonPrevAngle  = NaN;
     let moonOrbitAngle = 0;
 
-    for (let i = 0; i < steps; i++) {
+    let elapsed = 0;
+    for (let i = 0; i < 50_000 && elapsed < maxTime; i++) {
       // Moon state at this integration time
       const moonPos  = getMoonPosition(t);
       const dx       = pos.x - moonPos.x;
       const dy       = pos.y - moonPos.y;
       const moonDist = Math.sqrt(dx * dx + dy * dy);
       const inSOI    = moonDist < MOON_SOI && moonDist > 0;
+      // Always use fine steps inside Moon SOI; use coarse earthDt for long transfer arcs
+      const effectiveDt = inSOI ? 2 : earthDt;
 
-      path.push({ pos: vec2.clone(pos), vel: vec2.clone(vel), t, inMoonSOI: inSOI });
+      const moonRelPos = inSOI ? { x: pos.x - moonPos.x, y: pos.y - moonPos.y } : undefined;
+      path.push({ pos: vec2.clone(pos), vel: vec2.clone(vel), t, inMoonSOI: inSOI, moonRelPos });
 
       const r = vec2.length(pos);
       if (r < R_EARTH)  break;        // Earth impact
@@ -255,14 +319,14 @@ export class MapView {
         moonPrevAngle = moonRelAngle;
 
         const gMag = MU_MOON / (moonDist * moonDist);
-        vel.x += -(dx / moonDist) * gMag * dt;
-        vel.y += -(dy / moonDist) * gMag * dt;
+        vel.x += -(dx / moonDist) * gMag * effectiveDt;
+        vel.y += -(dy / moonDist) * gMag * effectiveDt;
       } else {
         moonPrevAngle = NaN;   // reset Moon-angle tracker when outside SOI
 
         const gMag = MU_EARTH / (r * r);
-        vel.x += -(pos.x / r) * gMag * dt;
-        vel.y += -(pos.y / r) * gMag * dt;
+        vel.x += -(pos.x / r) * gMag * effectiveDt;
+        vel.y += -(pos.y / r) * gMag * effectiveDt;
 
         // Count Earth-relative orbit angle (only outside SOI)
         const curAngle = Math.atan2(pos.y, pos.x);
@@ -274,9 +338,10 @@ export class MapView {
         if (i > 20 && totalAngle >= 2 * Math.PI * 1.02) break;  // slight overshoot so path closes
       }
 
-      pos.x += vel.x * dt;
-      pos.y += vel.y * dt;
-      t     += dt;
+      pos.x += vel.x * effectiveDt;
+      pos.y += vel.y * effectiveDt;
+      t     += effectiveDt;
+      elapsed += effectiveDt;
     }
 
     return path;
@@ -309,9 +374,23 @@ export class MapView {
 
     const moonPosBase = getMoonPosition(base.t);
     const baseInSOI   = vec2.length(vec2.sub(base.pos, moonPosBase)) < MOON_SOI;
-    const pnDt        = baseInSOI ? 4    : 10;
-    const pnSteps     = baseInSOI ? 2200 : 1400;
-    this.postNodePath        = this._predictPath(base.pos, newVel, base.t, pnSteps, pnDt);
+    let pnTime: number;
+    let pnEarthDt: number;
+    if (baseInSOI) {
+      const moonVelBase  = getMoonVelocity(base.t);
+      const relPosBase   = vec2.sub(base.pos, moonPosBase);
+      const relVelBase   = vec2.sub(newVel, moonVelBase);
+      const lunarOrbBase = computeOrbitalElements(relPosBase, relVelBase, MU_MOON, R_MOON);
+      const lunarPeriodB = isFinite(lunarOrbBase.period) && lunarOrbBase.period > 0 ? lunarOrbBase.period : 8_800;
+      pnTime    = Math.min(lunarPeriodB * 2.5, 3 * 86_400);
+      pnEarthDt = 2;
+    } else {
+      const orb    = computeOrbitalElements(base.pos, newVel);
+      const period = isFinite(orb.period) && orb.period > 0 ? orb.period : 4 * 86_400;
+      pnTime    = Math.min(period * 2.5, 4 * 86_400);
+      pnEarthDt = Math.max(10, Math.ceil(pnTime / 1_400));
+    }
+    this.postNodePath        = this._predictPath(base.pos, newVel, base.t, pnTime, pnEarthDt);
     this._postNodeEncounter  = this._findEncounter(this.postNodePath);
   }
 
@@ -365,7 +444,7 @@ export class MapView {
 
     let bestIdx = -1, bestDist = 22;
     for (let i = 0; i < this.cachedPath.length; i++) {
-      const sp = this._w2s(this.cachedPath[i].pos);
+      const sp = this._w2s(this._displayPos(this.cachedPath[i], this._moonPosAtRender));
       const d  = Math.hypot(mx - sp.x, my - sp.y);
       if (d < bestDist) { bestDist = d; bestIdx = i; }
     }
@@ -465,9 +544,19 @@ export class MapView {
     };
   }
 
+  /** Returns the display-world position for a trajectory point.
+   *  SOI points are shown Moon-relative (moonPosNow + moonRelPos) so the
+   *  orbit arc appears fixed relative to the Moon graphic even as the Moon moves. */
+  private _displayPos(pt: TrajPoint, moonPosNow: Vec2): Vec2 {
+    if (pt.inMoonSOI && pt.moonRelPos) {
+      return { x: moonPosNow.x + pt.moonRelPos.x, y: moonPosNow.y + pt.moonRelPos.y };
+    }
+    return pt.pos;
+  }
+
   // ─── Draw Trajectory ──────────────────────────────────────────────────────
 
-  private _drawTrajectory(path: TrajPoint[], isPlanned: boolean): void {
+  private _drawTrajectory(path: TrajPoint[], isPlanned: boolean, moonPosNow: Vec2): void {
     const ctx = this.ctx;
     const n   = path.length;
     if (n < 2) return;
@@ -479,8 +568,8 @@ export class MapView {
       const frac  = i / n;
       const alpha = Math.max(0.08, (isPlanned ? 0.80 : 0.82) - frac * 0.72);
 
-      const s0 = this._w2s(path[i - 1].pos);
-      const s1 = this._w2s(path[i].pos);
+      const s0 = this._w2s(this._displayPos(path[i - 1], moonPosNow));
+      const s1 = this._w2s(this._displayPos(path[i],     moonPosNow));
 
       if (s0.x < -300 && s1.x < -300) continue;
       if (s0.x > this.W + 300 && s1.x > this.W + 300) continue;
@@ -491,7 +580,6 @@ export class MapView {
 
       let color: string;
       if (inSOI) {
-        // Moon-relative segment: teal-green
         color = isPlanned
           ? `rgba(100,255,200,${alpha.toFixed(2)})`
           : `rgba(60,220,160,${alpha.toFixed(2)})`;
@@ -519,8 +607,8 @@ export class MapView {
       const frac = i / n;
       if (frac > 0.88) break;
 
-      const s0 = this._w2s(path[i].pos);
-      const s1 = this._w2s(path[i + 1].pos);
+      const s0 = this._w2s(this._displayPos(path[i],     moonPosNow));
+      const s1 = this._w2s(this._displayPos(path[i + 1], moonPosNow));
       const dx = s1.x - s0.x, dy = s1.y - s0.y;
       if (Math.hypot(dx, dy) < 5) continue;
 
@@ -563,12 +651,11 @@ export class MapView {
       ctx.textBaseline = 'alphabetic';
     }
 
-    // Lunar impact marker
-    if (last.inMoonSOI) {
-      const moonPos = getMoonPosition(last.t);
-      const dist    = vec2.length(vec2.sub(last.pos, moonPos));
+    // Lunar impact marker — draw at Moon-relative display position
+    if (last.inMoonSOI && last.moonRelPos) {
+      const dist = Math.hypot(last.moonRelPos.x, last.moonRelPos.y);
       if (dist < R_MOON * 1.05) {
-        const sp = this._w2s(last.pos);
+        const sp = this._w2s(this._displayPos(last, moonPosNow));
         ctx.beginPath();
         ctx.arc(sp.x, sp.y, 6, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(200,120,0,0.9)';
@@ -587,7 +674,7 @@ export class MapView {
 
   // ─── Periapsis / Apoapsis markers ────────────────────────────────────────
 
-  private _drawOrbMarkers(path: TrajPoint[]): void {
+  private _drawOrbMarkers(path: TrajPoint[], moonPosNow: Vec2): void {
     if (path.length < 2) return;
 
     const soiPts   = path.filter(p =>  p.inMoonSOI);
@@ -596,15 +683,15 @@ export class MapView {
     // Moon-relative Pe/Ap when majority of path is in Moon SOI
     if (soiPts.length > earthPts.length && soiPts.length > 4) {
       let minD = Infinity, maxD = -Infinity;
-      let minPos = soiPts[0].pos, maxPos = soiPts[0].pos;
+      let minRel: Vec2 = { x: 0, y: 0 }, maxRel: Vec2 = { x: 0, y: 0 };
       for (const pt of soiPts) {
-        const moonPt = getMoonPosition(pt.t);
-        const d = vec2.length(vec2.sub(pt.pos, moonPt));
-        if (d < minD) { minD = d; minPos = pt.pos; }
-        if (d > maxD) { maxD = d; maxPos = pt.pos; }
+        if (!pt.moonRelPos) continue;
+        const d = Math.hypot(pt.moonRelPos.x, pt.moonRelPos.y);
+        if (d < minD) { minD = d; minRel = pt.moonRelPos; }
+        if (d > maxD) { maxD = d; maxRel = pt.moonRelPos; }
       }
-      this._drawOrbMarkerMoon(minPos, 'Pe', THEME.warning, soiPts[0].t);
-      this._drawOrbMarkerMoon(maxPos, 'Ap', THEME.accent,  soiPts[0].t);
+      this._drawOrbMarkerMoon(minRel, moonPosNow, 'Pe', THEME.warning);
+      this._drawOrbMarkerMoon(maxRel, moonPosNow, 'Ap', THEME.accent);
       return;
     }
 
@@ -655,12 +742,12 @@ export class MapView {
     ctx.fillText(`${label}: ${altStr}`, sp.x + 8, sp.y - 4);
   }
 
-  /** Same as _drawOrbMarker but shows Moon-relative altitude */
-  private _drawOrbMarkerMoon(worldPos: Vec2, label: string, color: string, t: number): void {
-    const ctx     = this.ctx;
-    const sp      = this._w2s(worldPos);
-    const moonPos = getMoonPosition(t);
-    const alt     = vec2.length(vec2.sub(worldPos, moonPos)) - R_MOON;
+  /** Same as _drawOrbMarker but takes Moon-relative position and shows Moon-relative altitude */
+  private _drawOrbMarkerMoon(moonRelPos: Vec2, moonPosNow: Vec2, label: string, color: string): void {
+    const ctx    = this.ctx;
+    const dispW  = { x: moonPosNow.x + moonRelPos.x, y: moonPosNow.y + moonRelPos.y };
+    const sp     = this._w2s(dispW);
+    const alt    = Math.hypot(moonRelPos.x, moonRelPos.y) - R_MOON;
 
     ctx.beginPath();
     ctx.arc(sp.x, sp.y, 5, 0, Math.PI * 2);
@@ -754,7 +841,8 @@ export class MapView {
     const pt  = path[enc.entryIdx];
     if (!pt) return;
 
-    const sp    = this._w2s(pt.pos);
+    const moonPosNow = getMoonPosition(missionTime);
+    const sp    = this._w2s(this._displayPos(pt, moonPosNow));
     const color = isPlanned ? '#ffdd00' : '#00ffcc';
 
     // Entry ring
@@ -769,7 +857,7 @@ export class MapView {
     // Closest approach marker
     const ca = path[enc.closestIdx];
     if (ca) {
-      const caSP = this._w2s(ca.pos);
+      const caSP = this._w2s(this._displayPos(ca, moonPosNow));
       ctx.beginPath();
       ctx.arc(caSP.x, caSP.y, 5, 0, Math.PI * 2);
       ctx.fillStyle = enc.isImpact ? THEME.danger : color;
@@ -898,12 +986,14 @@ export class MapView {
     if (!base)  return;
 
     const ctx = this.ctx;
-    const sp  = this._w2s(base.pos);
+    const sp  = this._w2s(this._displayPos(base, this._moonPosAtRender));
     this._nodeScreenPt = sp;
 
     const vel  = base.vel;
     const prog = vec2.length(vel) > 1 ? vec2.normalize(vel) : { x: 1, y: 0 };
-    const rOut = vec2.normalize(base.pos);
+    // Radial direction: away from current body (Moon when in SOI, Earth otherwise)
+    const radialBase = (base.inMoonSOI && base.moonRelPos) ? base.moonRelPos : base.pos;
+    const rOut = vec2.normalize(radialBase);
 
     this._progradeScreenDir = { x: prog.x, y: -prog.y };
     this._radialScreenDir   = { x: rOut.x, y: -rOut.y };

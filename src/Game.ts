@@ -223,6 +223,9 @@ export class Game {
       this.rocket.body.mass = this.rocket.getTotalMass();
     }
 
+    // ── Burn-node state (must run every frame, even when map is closed) ──────
+    this.mapView.tick(this.rocket, this.physics.missionTime);
+
     // ── Check mission events ──────────────────────────────────────────────
     this._checkFlightEvents();
 
@@ -243,7 +246,7 @@ export class Game {
         this.physics.missionTime,
         warpFactor,
       );
-      this.renderer.renderBurnGuidance(this.rocket, this.mapView.node, this.physics.missionTime);
+      this.renderer.renderBurnGuidance(this.rocket, this.mapView.node, this.physics.missionTime, this.mapView.dvRemaining);
     }
   }
 
@@ -263,6 +266,70 @@ export class Game {
       }
       if (this.input.rotateRight) {
         this.physics.applyRotation(this.rocket.body, +1, dt, this.rocket.hasCommandPod);
+      }
+    }
+
+    // ── Auto-align + auto-execute maneuver node ────────────────────────────
+    const node       = this.mapView.node;
+    const warpFactor = this.WARP_LEVELS[this.warpIndex];
+    if (node && this.rocket.hasCommandPod) {
+      const vel    = this.rocket.body.vel;
+      const pos    = this.rocket.body.pos;
+      const speed  = Math.hypot(vel.x, vel.y);
+      const posLen = Math.hypot(pos.x, pos.y);
+
+      const prograde  = speed  > 1 ? { x: vel.x / speed,  y: vel.y / speed  } : { x: 0, y: 1 };
+      const radialOut = posLen > 0 ? { x: pos.x / posLen, y: pos.y / posLen } : { x: 0, y: 1 };
+
+      const burnX   = node.progradeDV * prograde.x + node.normalDV * radialOut.x;
+      const burnY   = node.progradeDV * prograde.y + node.normalDV * radialOut.y;
+      const burnLen = Math.hypot(burnX, burnY);
+
+      let aligned = false;
+
+      if (burnLen > 0.1) {
+        // desiredAngle uses atan2(x,y) to match the game's (sin,cos) angle convention
+        const desiredAngle = Math.atan2(burnX, burnY);
+        let   angleDiff    = desiredAngle - this.rocket.body.angle;
+        while (angleDiff >  Math.PI) angleDiff -= 2 * Math.PI;
+        while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+
+        aligned = Math.abs(angleDiff) < 0.087;  // within ~5°
+
+        if (this.warpIndex > 0) {
+          // Warp > 1×: instant snap
+          this.rocket.body.angle  = desiredAngle;
+          this.rocket.body.angVel = 0;
+          aligned = true;
+        } else if (!this.input.rotateLeft && !this.input.rotateRight) {
+          // 1× warp, no manual override: bang-bang near target, proportional far away
+          if (Math.abs(angleDiff) > 0.005) {
+            // Full torque toward target; proportional only in final 0.15 rad to avoid overshoot
+            const dir = Math.abs(angleDiff) > 0.15
+              ? Math.sign(angleDiff)
+              : angleDiff / 0.15;
+            this.physics.applyRotation(this.rocket.body, dir, dt, this.rocket.hasCommandPod);
+          } else {
+            // Inside dead-zone — kill residual spin quickly
+            this.rocket.body.angVel *= Math.pow(0.5, dt * 60);
+          }
+        }
+      }
+
+      // ── Auto-execute: fire engines when T− < 0, cut when done ──────────
+      const dvRem = this.mapView.dvRemaining;
+      if (dvRem !== null && warpFactor < 100) {
+        if (dvRem < 0.5) {
+          // Burn complete — cut throttle and clear node
+          this.throttle = 0;
+          this.mapView.node = null;
+        } else if (aligned) {
+          // Taper throttle in last 10 m/s to avoid overshoot
+          this.throttle = Math.min(1, dvRem / 10);
+        } else {
+          // Not aligned yet — hold off
+          this.throttle = 0;
+        }
       }
     }
 

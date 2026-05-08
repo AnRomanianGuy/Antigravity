@@ -1239,7 +1239,7 @@
       const ctx = this.ctx;
       const { H } = this;
       const alt = frame.altAboveNearest;
-      const viewHeightM = 2e4 + alt * alt / 5e4;
+      const viewHeightM = alt < 1e5 ? 2e4 + alt * alt / 5e4 : 22e4 * Math.pow(alt / 1e5, 0.6);
       const mpp = viewHeightM / H;
       const camera = {
         focus: vec2.clone(rocket.body.pos),
@@ -2460,7 +2460,7 @@
      * Render a burn guidance panel when there is an active maneuver node.
      * Shows: time to node, total ΔV, heading alignment indicator.
      */
-    renderBurnGuidance(rocket, node, missionTime) {
+    renderBurnGuidance(rocket, node, missionTime, dvRemaining = null) {
       if (!node || node.executed)
         return;
       const totalDV = Math.hypot(node.progradeDV, node.normalDV);
@@ -2469,6 +2469,7 @@
       const ctx = this.ctx;
       const { W, H } = this;
       const timeToNode = node.time - missionTime;
+      const isExecuting = timeToNode <= 0;
       const vel = rocket.body.vel;
       const pos = rocket.body.pos;
       const speed = Math.hypot(vel.x, vel.y);
@@ -2487,38 +2488,84 @@
       while (angleDiff < -Math.PI)
         angleDiff += 2 * Math.PI;
       const aligned = Math.abs(angleDiff) < 0.05;
-      const pw = 260, ph = 116;
+      const pw = 260, ph = isExecuting ? 130 : 116;
       const px = (W - pw) / 2;
       const py = H / 2 - ph - 20;
       this._drawPanel(px, py, pw, ph);
-      ctx.fillStyle = timeToNode < 30 ? THEME.danger : THEME.warning;
-      ctx.font = "bold 12px Courier New";
-      ctx.textAlign = "center";
-      ctx.fillText("\u25B6 MANEUVER NODE", W / 2, py + 17);
       const leftX = px + 12;
-      const rows = [
-        ["\u0394V", `${totalDV.toFixed(0)} m/s`, THEME.accent],
-        [
-          "T\u2212",
-          timeToNode <= 0 ? "BURN NOW" : this._fmtNodeTime(timeToNode),
-          timeToNode < 30 ? THEME.danger : THEME.text
-        ]
-      ];
-      rows.forEach(([label, value, color], i) => {
-        const ry = py + 36 + i * 20;
+      if (isExecuting) {
+        const almostDone = dvRemaining !== null && dvRemaining < 30;
+        ctx.fillStyle = almostDone ? THEME.danger : "#ff8800";
+        ctx.font = "bold 12px Courier New";
+        ctx.textAlign = "center";
+        ctx.fillText("\u25CF EXECUTING BURN", W / 2, py + 17);
         ctx.fillStyle = THEME.textDim;
         ctx.font = "10px Courier New";
         ctx.textAlign = "left";
-        ctx.fillText(label, leftX, ry);
-        ctx.fillStyle = color;
-        ctx.fillText(value, leftX + 36, ry);
-      });
-      const errDeg = (angleDiff * 180 / Math.PI).toFixed(1);
-      const alignStr = aligned ? "\u2713 ALIGNED" : `HDG ${Number(errDeg) > 0 ? "+" : ""}${errDeg}\xB0`;
-      ctx.fillStyle = aligned ? THEME.success : THEME.warning;
-      ctx.font = "bold 10px Courier New";
-      ctx.textAlign = "left";
-      ctx.fillText(alignStr, leftX, py + 80);
+        ctx.fillText("\u0394V rem", leftX, py + 38);
+        ctx.fillStyle = almostDone ? THEME.danger : THEME.accent;
+        ctx.font = "bold 15px Courier New";
+        ctx.fillText(
+          dvRemaining !== null ? `${dvRemaining.toFixed(0)} m/s` : "--- m/s",
+          leftX + 52,
+          py + 38
+        );
+        ctx.fillStyle = THEME.textDim;
+        ctx.font = "10px Courier New";
+        ctx.fillText(`of ${totalDV.toFixed(0)} m/s`, leftX + 52, py + 54);
+        if (dvRemaining !== null) {
+          const progress = Math.min(1, 1 - dvRemaining / totalDV);
+          const bx = leftX, by = py + 62, bw = pw - 24 - 104, bh = 8;
+          ctx.fillStyle = "rgba(40,40,40,0.8)";
+          ctx.fillRect(bx, by, bw, bh);
+          ctx.fillStyle = almostDone ? THEME.danger : "#ff8800";
+          ctx.fillRect(bx, by, bw * progress, bh);
+          ctx.strokeStyle = "rgba(255,255,255,0.15)";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(bx, by, bw, bh);
+        }
+        if (almostDone) {
+          ctx.fillStyle = THEME.danger;
+          ctx.font = "bold 11px Courier New";
+          ctx.textAlign = "left";
+          ctx.fillText("\u25BC CUT ENGINES", leftX, py + 82);
+        } else {
+          const errDeg = (angleDiff * 180 / Math.PI).toFixed(1);
+          const alignStr = aligned ? "\u2713 ALIGNED" : `HDG ${Number(errDeg) > 0 ? "+" : ""}${errDeg}\xB0`;
+          ctx.fillStyle = aligned ? THEME.success : THEME.warning;
+          ctx.font = "bold 10px Courier New";
+          ctx.textAlign = "left";
+          ctx.fillText(alignStr, leftX, py + 82);
+        }
+      } else {
+        ctx.fillStyle = timeToNode < 30 ? THEME.danger : THEME.warning;
+        ctx.font = "bold 12px Courier New";
+        ctx.textAlign = "center";
+        ctx.fillText("\u25B6 MANEUVER NODE", W / 2, py + 17);
+        const rows = [
+          ["\u0394V", `${totalDV.toFixed(0)} m/s`, THEME.accent],
+          [
+            "T\u2212",
+            timeToNode <= 0 ? "BURN NOW" : this._fmtNodeTime(timeToNode),
+            timeToNode < 30 ? THEME.danger : THEME.text
+          ]
+        ];
+        rows.forEach(([label, value, color], i) => {
+          const ry = py + 36 + i * 20;
+          ctx.fillStyle = THEME.textDim;
+          ctx.font = "10px Courier New";
+          ctx.textAlign = "left";
+          ctx.fillText(label, leftX, ry);
+          ctx.fillStyle = color;
+          ctx.fillText(value, leftX + 36, ry);
+        });
+        const errDeg = (angleDiff * 180 / Math.PI).toFixed(1);
+        const alignStr = aligned ? "\u2713 ALIGNED" : `HDG ${Number(errDeg) > 0 ? "+" : ""}${errDeg}\xB0`;
+        ctx.fillStyle = aligned ? THEME.success : THEME.warning;
+        ctx.font = "bold 10px Courier New";
+        ctx.textAlign = "left";
+        ctx.fillText(alignStr, leftX, py + 80);
+      }
       const cxc = px + pw - 50;
       const cyc = py + ph / 2 + 4;
       const cr = 36;
@@ -3319,6 +3366,12 @@
       this.cachedPath = [];
       this.postNodePath = [];
       this.pathAge = 0;
+      this._moonPosAtRender = { x: 0, y: 0 };
+      // ── Burn execution tracking ───────────────────────────────────────────────
+      this._burnStartVel = null;
+      this._burnTotalDV = 0;
+      this._dvRemaining = null;
+      this._prevTimeToNode = Infinity;
       // ── Encounter cache ───────────────────────────────────────────────────────
       this._encounter = null;
       this._postNodeEncounter = null;
@@ -3353,26 +3406,45 @@
       this._drawGrid(missionTime);
       this._drawMoon(missionTime);
       this._drawEarth();
+      const isExecutingBurn = this.node !== null && this.node.time - missionTime < 0;
+      const moonPosNow = getMoonPosition(missionTime);
+      this._moonPosAtRender = moonPosNow;
       this.pathAge++;
       if (this.pathAge > 60 || this.cachedPath.length === 0) {
-        const moonPosCurr = getMoonPosition(missionTime);
+        const moonPosCurr = moonPosNow;
         const moonDistCurr = vec2.length(vec2.sub(rocket.body.pos, moonPosCurr));
         const rocketInSOI = moonDistCurr < MOON_SOI;
-        const predDt = rocketInSOI ? 4 : 10;
-        const predSteps = rocketInSOI ? 2200 : 1400;
-        this.cachedPath = this._predictPath(rocket.body.pos, rocket.body.vel, missionTime, predSteps, predDt);
+        let predTime;
+        let predEarthDt;
+        if (rocketInSOI) {
+          const moonVelCurr = getMoonVelocity(missionTime);
+          const relPos = vec2.sub(rocket.body.pos, moonPosCurr);
+          const relVel = vec2.sub(rocket.body.vel, moonVelCurr);
+          const lunarOrb = computeOrbitalElements(relPos, relVel, MU_MOON, R_MOON);
+          const lunarPeriod = isFinite(lunarOrb.period) && lunarOrb.period > 0 ? lunarOrb.period : 8800;
+          predTime = Math.min(lunarPeriod * 2.5, 3 * 86400);
+          predEarthDt = 2;
+        } else {
+          const orb = computeOrbitalElements(rocket.body.pos, rocket.body.vel);
+          const period = isFinite(orb.period) && orb.period > 0 ? orb.period : 4 * 86400;
+          predTime = Math.min(period * 2.5, 4 * 86400);
+          predEarthDt = Math.max(10, Math.ceil(predTime / 1400));
+        }
+        this.cachedPath = this._predictPath(rocket.body.pos, rocket.body.vel, missionTime, predTime, predEarthDt);
         this._encounter = this._findEncounter(this.cachedPath);
         this.pathAge = 0;
         if (this.node) {
           this._nodeIdx = this._findNodeIdx(this.node.time);
-          this._recomputePostNode();
+          if (!isExecutingBurn) {
+            this._recomputePostNode();
+          }
         }
       }
-      this._drawTrajectory(this.cachedPath, false);
+      this._drawTrajectory(this.cachedPath, false, moonPosNow);
       if (this.node && this.postNodePath.length > 1) {
-        this._drawTrajectory(this.postNodePath, true);
+        this._drawTrajectory(this.postNodePath, true, moonPosNow);
       }
-      this._drawOrbMarkers(this.cachedPath);
+      this._drawOrbMarkers(this.cachedPath, moonPosNow);
       if (this.node && this.postNodePath.length > 1) {
         this._drawOrbMarkersPost(this.postNodePath);
       }
@@ -3397,8 +3469,34 @@
       ctx.font = "11px Courier New";
       ctx.fillText("M \u2014 flight  |  Click trajectory \u2014 place node  |  Click node \u2014 delete", W / 2, 46);
     }
+    /** ΔV remaining in the currently executing burn, or null if no burn is active. */
+    get dvRemaining() {
+      return this._dvRemaining;
+    }
+    /**
+     * Update burn-execution state every game frame, even when the map is not visible.
+     * Must be called from Game._updateFlight() before renderBurnGuidance.
+     */
+    tick(rocket, missionTime) {
+      const timeToNode = this.node ? this.node.time - missionTime : Infinity;
+      const isExecutingBurn = this.node !== null && timeToNode < 0;
+      if (this.node && timeToNode < 0 && this._prevTimeToNode >= 0) {
+        this._burnStartVel = { x: rocket.body.vel.x, y: rocket.body.vel.y };
+        this._burnTotalDV = Math.hypot(this.node.progradeDV, this.node.normalDV);
+      }
+      if (!this.node || !isExecutingBurn)
+        this._burnStartVel = null;
+      this._prevTimeToNode = timeToNode;
+      if (isExecutingBurn && this._burnStartVel !== null) {
+        const dx = rocket.body.vel.x - this._burnStartVel.x;
+        const dy = rocket.body.vel.y - this._burnStartVel.y;
+        this._dvRemaining = Math.max(0, this._burnTotalDV - Math.sqrt(dx * dx + dy * dy));
+      } else {
+        this._dvRemaining = null;
+      }
+    }
     // ─── Trajectory Prediction (patched conics) ───────────────────────────────
-    _predictPath(startPos, startVel, startT, steps, dt) {
+    _predictPath(startPos, startVel, startT, maxTime, earthDt) {
       const path = [];
       let pos = vec2.clone(startPos);
       let vel = vec2.clone(startVel);
@@ -3407,13 +3505,16 @@
       let totalAngle = 0;
       let moonPrevAngle = NaN;
       let moonOrbitAngle = 0;
-      for (let i = 0; i < steps; i++) {
+      let elapsed = 0;
+      for (let i = 0; i < 5e4 && elapsed < maxTime; i++) {
         const moonPos = getMoonPosition(t);
         const dx = pos.x - moonPos.x;
         const dy = pos.y - moonPos.y;
         const moonDist = Math.sqrt(dx * dx + dy * dy);
         const inSOI = moonDist < MOON_SOI && moonDist > 0;
-        path.push({ pos: vec2.clone(pos), vel: vec2.clone(vel), t, inMoonSOI: inSOI });
+        const effectiveDt = inSOI ? 2 : earthDt;
+        const moonRelPos = inSOI ? { x: pos.x - moonPos.x, y: pos.y - moonPos.y } : void 0;
+        path.push({ pos: vec2.clone(pos), vel: vec2.clone(vel), t, inMoonSOI: inSOI, moonRelPos });
         const r = vec2.length(pos);
         if (r < R_EARTH)
           break;
@@ -3433,13 +3534,13 @@
           }
           moonPrevAngle = moonRelAngle;
           const gMag = MU_MOON / (moonDist * moonDist);
-          vel.x += -(dx / moonDist) * gMag * dt;
-          vel.y += -(dy / moonDist) * gMag * dt;
+          vel.x += -(dx / moonDist) * gMag * effectiveDt;
+          vel.y += -(dy / moonDist) * gMag * effectiveDt;
         } else {
           moonPrevAngle = NaN;
           const gMag = MU_EARTH / (r * r);
-          vel.x += -(pos.x / r) * gMag * dt;
-          vel.y += -(pos.y / r) * gMag * dt;
+          vel.x += -(pos.x / r) * gMag * effectiveDt;
+          vel.y += -(pos.y / r) * gMag * effectiveDt;
           const curAngle = Math.atan2(pos.y, pos.x);
           let dA = curAngle - prevAngle;
           if (dA > Math.PI)
@@ -3451,9 +3552,10 @@
           if (i > 20 && totalAngle >= 2 * Math.PI * 1.02)
             break;
         }
-        pos.x += vel.x * dt;
-        pos.y += vel.y * dt;
-        t += dt;
+        pos.x += vel.x * effectiveDt;
+        pos.y += vel.y * effectiveDt;
+        t += effectiveDt;
+        elapsed += effectiveDt;
       }
       return path;
     }
@@ -3490,9 +3592,23 @@
       };
       const moonPosBase = getMoonPosition(base.t);
       const baseInSOI = vec2.length(vec2.sub(base.pos, moonPosBase)) < MOON_SOI;
-      const pnDt = baseInSOI ? 4 : 10;
-      const pnSteps = baseInSOI ? 2200 : 1400;
-      this.postNodePath = this._predictPath(base.pos, newVel, base.t, pnSteps, pnDt);
+      let pnTime;
+      let pnEarthDt;
+      if (baseInSOI) {
+        const moonVelBase = getMoonVelocity(base.t);
+        const relPosBase = vec2.sub(base.pos, moonPosBase);
+        const relVelBase = vec2.sub(newVel, moonVelBase);
+        const lunarOrbBase = computeOrbitalElements(relPosBase, relVelBase, MU_MOON, R_MOON);
+        const lunarPeriodB = isFinite(lunarOrbBase.period) && lunarOrbBase.period > 0 ? lunarOrbBase.period : 8800;
+        pnTime = Math.min(lunarPeriodB * 2.5, 3 * 86400);
+        pnEarthDt = 2;
+      } else {
+        const orb = computeOrbitalElements(base.pos, newVel);
+        const period = isFinite(orb.period) && orb.period > 0 ? orb.period : 4 * 86400;
+        pnTime = Math.min(period * 2.5, 4 * 86400);
+        pnEarthDt = Math.max(10, Math.ceil(pnTime / 1400));
+      }
+      this.postNodePath = this._predictPath(base.pos, newVel, base.t, pnTime, pnEarthDt);
       this._postNodeEncounter = this._findEncounter(this.postNodePath);
     }
     // ─── Encounter Detection ──────────────────────────────────────────────────
@@ -3544,7 +3660,7 @@
         return false;
       let bestIdx = -1, bestDist = 22;
       for (let i = 0; i < this.cachedPath.length; i++) {
-        const sp = this._w2s(this.cachedPath[i].pos);
+        const sp = this._w2s(this._displayPos(this.cachedPath[i], this._moonPosAtRender));
         const d = Math.hypot(mx - sp.x, my - sp.y);
         if (d < bestDist) {
           bestDist = d;
@@ -3639,8 +3755,17 @@
         y: this.H / 2 - world.y / this.eMpp + this.panY
       };
     }
+    /** Returns the display-world position for a trajectory point.
+     *  SOI points are shown Moon-relative (moonPosNow + moonRelPos) so the
+     *  orbit arc appears fixed relative to the Moon graphic even as the Moon moves. */
+    _displayPos(pt, moonPosNow) {
+      if (pt.inMoonSOI && pt.moonRelPos) {
+        return { x: moonPosNow.x + pt.moonRelPos.x, y: moonPosNow.y + pt.moonRelPos.y };
+      }
+      return pt.pos;
+    }
     // ─── Draw Trajectory ──────────────────────────────────────────────────────
-    _drawTrajectory(path, isPlanned) {
+    _drawTrajectory(path, isPlanned, moonPosNow) {
       const ctx = this.ctx;
       const n = path.length;
       if (n < 2)
@@ -3650,8 +3775,8 @@
       for (let i = 1; i < n; i++) {
         const frac = i / n;
         const alpha = Math.max(0.08, (isPlanned ? 0.8 : 0.82) - frac * 0.72);
-        const s0 = this._w2s(path[i - 1].pos);
-        const s1 = this._w2s(path[i].pos);
+        const s0 = this._w2s(this._displayPos(path[i - 1], moonPosNow));
+        const s1 = this._w2s(this._displayPos(path[i], moonPosNow));
         if (s0.x < -300 && s1.x < -300)
           continue;
         if (s0.x > this.W + 300 && s1.x > this.W + 300)
@@ -3679,8 +3804,8 @@
         const frac = i / n;
         if (frac > 0.88)
           break;
-        const s0 = this._w2s(path[i].pos);
-        const s1 = this._w2s(path[i + 1].pos);
+        const s0 = this._w2s(this._displayPos(path[i], moonPosNow));
+        const s1 = this._w2s(this._displayPos(path[i + 1], moonPosNow));
         const dx = s1.x - s0.x, dy = s1.y - s0.y;
         if (Math.hypot(dx, dy) < 5)
           continue;
@@ -3718,11 +3843,10 @@
         ctx.fillText("IMPACT", sp.x + 9, sp.y);
         ctx.textBaseline = "alphabetic";
       }
-      if (last.inMoonSOI) {
-        const moonPos = getMoonPosition(last.t);
-        const dist = vec2.length(vec2.sub(last.pos, moonPos));
+      if (last.inMoonSOI && last.moonRelPos) {
+        const dist = Math.hypot(last.moonRelPos.x, last.moonRelPos.y);
         if (dist < R_MOON * 1.05) {
-          const sp = this._w2s(last.pos);
+          const sp = this._w2s(this._displayPos(last, moonPosNow));
           ctx.beginPath();
           ctx.arc(sp.x, sp.y, 6, 0, Math.PI * 2);
           ctx.fillStyle = "rgba(200,120,0,0.9)";
@@ -3741,28 +3865,29 @@
       ctx.restore();
     }
     // ─── Periapsis / Apoapsis markers ────────────────────────────────────────
-    _drawOrbMarkers(path) {
+    _drawOrbMarkers(path, moonPosNow) {
       if (path.length < 2)
         return;
       const soiPts = path.filter((p) => p.inMoonSOI);
       const earthPts = path.filter((p) => !p.inMoonSOI);
       if (soiPts.length > earthPts.length && soiPts.length > 4) {
         let minD = Infinity, maxD = -Infinity;
-        let minPos2 = soiPts[0].pos, maxPos2 = soiPts[0].pos;
+        let minRel = { x: 0, y: 0 }, maxRel = { x: 0, y: 0 };
         for (const pt of soiPts) {
-          const moonPt = getMoonPosition(pt.t);
-          const d = vec2.length(vec2.sub(pt.pos, moonPt));
+          if (!pt.moonRelPos)
+            continue;
+          const d = Math.hypot(pt.moonRelPos.x, pt.moonRelPos.y);
           if (d < minD) {
             minD = d;
-            minPos2 = pt.pos;
+            minRel = pt.moonRelPos;
           }
           if (d > maxD) {
             maxD = d;
-            maxPos2 = pt.pos;
+            maxRel = pt.moonRelPos;
           }
         }
-        this._drawOrbMarkerMoon(minPos2, "Pe", THEME.warning, soiPts[0].t);
-        this._drawOrbMarkerMoon(maxPos2, "Ap", THEME.accent, soiPts[0].t);
+        this._drawOrbMarkerMoon(minRel, moonPosNow, "Pe", THEME.warning);
+        this._drawOrbMarkerMoon(maxRel, moonPosNow, "Ap", THEME.accent);
         return;
       }
       if (earthPts.length < 2)
@@ -3819,12 +3944,12 @@
       const altStr = alt < 1e6 ? `${(alt / 1e3).toFixed(1)} km` : `${(alt / 1e6).toFixed(3)} Mm`;
       ctx.fillText(`${label}: ${altStr}`, sp.x + 8, sp.y - 4);
     }
-    /** Same as _drawOrbMarker but shows Moon-relative altitude */
-    _drawOrbMarkerMoon(worldPos, label, color, t) {
+    /** Same as _drawOrbMarker but takes Moon-relative position and shows Moon-relative altitude */
+    _drawOrbMarkerMoon(moonRelPos, moonPosNow, label, color) {
       const ctx = this.ctx;
-      const sp = this._w2s(worldPos);
-      const moonPos = getMoonPosition(t);
-      const alt = vec2.length(vec2.sub(worldPos, moonPos)) - R_MOON;
+      const dispW = { x: moonPosNow.x + moonRelPos.x, y: moonPosNow.y + moonRelPos.y };
+      const sp = this._w2s(dispW);
+      const alt = Math.hypot(moonRelPos.x, moonRelPos.y) - R_MOON;
       ctx.beginPath();
       ctx.arc(sp.x, sp.y, 5, 0, Math.PI * 2);
       ctx.fillStyle = color;
@@ -3898,7 +4023,8 @@
       const pt = path[enc.entryIdx];
       if (!pt)
         return;
-      const sp = this._w2s(pt.pos);
+      const moonPosNow = getMoonPosition(missionTime);
+      const sp = this._w2s(this._displayPos(pt, moonPosNow));
       const color = isPlanned ? "#ffdd00" : "#00ffcc";
       ctx.beginPath();
       ctx.arc(sp.x, sp.y, 8, 0, Math.PI * 2);
@@ -3909,7 +4035,7 @@
       ctx.stroke();
       const ca = path[enc.closestIdx];
       if (ca) {
-        const caSP = this._w2s(ca.pos);
+        const caSP = this._w2s(this._displayPos(ca, moonPosNow));
         ctx.beginPath();
         ctx.arc(caSP.x, caSP.y, 5, 0, Math.PI * 2);
         ctx.fillStyle = enc.isImpact ? THEME.danger : color;
@@ -4025,11 +4151,12 @@
       if (!base)
         return;
       const ctx = this.ctx;
-      const sp = this._w2s(base.pos);
+      const sp = this._w2s(this._displayPos(base, this._moonPosAtRender));
       this._nodeScreenPt = sp;
       const vel = base.vel;
       const prog = vec2.length(vel) > 1 ? vec2.normalize(vel) : { x: 1, y: 0 };
-      const rOut = vec2.normalize(base.pos);
+      const radialBase = base.inMoonSOI && base.moonRelPos ? base.moonRelPos : base.pos;
+      const rOut = vec2.normalize(radialBase);
       this._progradeScreenDir = { x: prog.x, y: -prog.y };
       this._radialScreenDir = { x: rOut.x, y: -rOut.y };
       const pv = this._progradeScreenDir;
@@ -4476,6 +4603,7 @@
         }
         this.rocket.body.mass = this.rocket.getTotalMass();
       }
+      this.mapView.tick(this.rocket, this.physics.missionTime);
       this._checkFlightEvents();
       const frame = this.physics.lastFrame;
       if (this.isMapOpen) {
@@ -4493,7 +4621,7 @@
           this.physics.missionTime,
           warpFactor
         );
-        this.renderer.renderBurnGuidance(this.rocket, this.mapView.node, this.physics.missionTime);
+        this.renderer.renderBurnGuidance(this.rocket, this.mapView.node, this.physics.missionTime, this.mapView.dvRemaining);
       }
     }
     // ─── Input Processing ──────────────────────────────────────────────────────
@@ -4510,6 +4638,52 @@
         }
         if (this.input.rotateRight) {
           this.physics.applyRotation(this.rocket.body, 1, dt, this.rocket.hasCommandPod);
+        }
+      }
+      const node = this.mapView.node;
+      const warpFactor = this.WARP_LEVELS[this.warpIndex];
+      if (node && this.rocket.hasCommandPod) {
+        const vel = this.rocket.body.vel;
+        const pos = this.rocket.body.pos;
+        const speed = Math.hypot(vel.x, vel.y);
+        const posLen = Math.hypot(pos.x, pos.y);
+        const prograde = speed > 1 ? { x: vel.x / speed, y: vel.y / speed } : { x: 0, y: 1 };
+        const radialOut = posLen > 0 ? { x: pos.x / posLen, y: pos.y / posLen } : { x: 0, y: 1 };
+        const burnX = node.progradeDV * prograde.x + node.normalDV * radialOut.x;
+        const burnY = node.progradeDV * prograde.y + node.normalDV * radialOut.y;
+        const burnLen = Math.hypot(burnX, burnY);
+        let aligned = false;
+        if (burnLen > 0.1) {
+          const desiredAngle = Math.atan2(burnX, burnY);
+          let angleDiff = desiredAngle - this.rocket.body.angle;
+          while (angleDiff > Math.PI)
+            angleDiff -= 2 * Math.PI;
+          while (angleDiff < -Math.PI)
+            angleDiff += 2 * Math.PI;
+          aligned = Math.abs(angleDiff) < 0.087;
+          if (this.warpIndex > 0) {
+            this.rocket.body.angle = desiredAngle;
+            this.rocket.body.angVel = 0;
+            aligned = true;
+          } else if (!this.input.rotateLeft && !this.input.rotateRight) {
+            if (Math.abs(angleDiff) > 5e-3) {
+              const dir = Math.abs(angleDiff) > 0.15 ? Math.sign(angleDiff) : angleDiff / 0.15;
+              this.physics.applyRotation(this.rocket.body, dir, dt, this.rocket.hasCommandPod);
+            } else {
+              this.rocket.body.angVel *= Math.pow(0.5, dt * 60);
+            }
+          }
+        }
+        const dvRem = this.mapView.dvRemaining;
+        if (dvRem !== null && warpFactor < 100) {
+          if (dvRem < 0.5) {
+            this.throttle = 0;
+            this.mapView.node = null;
+          } else if (aligned) {
+            this.throttle = Math.min(1, dvRem / 10);
+          } else {
+            this.throttle = 0;
+          }
         }
       }
       if (this.warpUpPressed) {
