@@ -187,7 +187,8 @@ export class MapView {
       } else {
         const orb    = computeOrbitalElements(rocket.body.pos, rocket.body.vel);
         const period = isFinite(orb.period) && orb.period > 0 ? orb.period : 4 * 86_400;
-        predTime    = Math.min(period * 2.5, 4 * 86_400);   // cap at 4 days
+        // Show up to 2.5 orbits regardless of size; cap at 1 year to prevent runaway
+        predTime    = Math.min(period * 2.5, 365 * 86_400);
         predEarthDt = Math.max(10, Math.ceil(predTime / 1_400));
       }
 
@@ -305,9 +306,20 @@ export class MapView {
       if (r < R_EARTH)  break;        // Earth impact
       if (moonDist < R_MOON) break;   // Lunar impact
 
-      // Patched-conic gravity: only one body at a time
+      // N-body gravity: Earth + Moon act simultaneously at all times.
+      // Earth gravity
+      const earthGMag = MU_EARTH / (r * r);
+      vel.x += -(pos.x / r) * earthGMag * effectiveDt;
+      vel.y += -(pos.y / r) * earthGMag * effectiveDt;
+      // Moon gravity
+      if (moonDist > 0) {
+        const moonGMag = MU_MOON / (moonDist * moonDist);
+        vel.x += -(dx / moonDist) * moonGMag * effectiveDt;
+        vel.y += -(dy / moonDist) * moonGMag * effectiveDt;
+      }
+
+      // Orbit-angle termination (keeps prediction to ~1 orbit, avoids infinite loops)
       if (inSOI) {
-        // Track Moon-centred orbit angle; terminate after ~1 full orbit
         const moonRelAngle = Math.atan2(dy, dx);
         if (!isNaN(moonPrevAngle)) {
           let dA = moonRelAngle - moonPrevAngle;
@@ -317,25 +329,15 @@ export class MapView {
           if (i > 10 && moonOrbitAngle >= 2 * Math.PI * 1.05) break;
         }
         moonPrevAngle = moonRelAngle;
-
-        const gMag = MU_MOON / (moonDist * moonDist);
-        vel.x += -(dx / moonDist) * gMag * effectiveDt;
-        vel.y += -(dy / moonDist) * gMag * effectiveDt;
       } else {
-        moonPrevAngle = NaN;   // reset Moon-angle tracker when outside SOI
-
-        const gMag = MU_EARTH / (r * r);
-        vel.x += -(pos.x / r) * gMag * effectiveDt;
-        vel.y += -(pos.y / r) * gMag * effectiveDt;
-
-        // Count Earth-relative orbit angle (only outside SOI)
+        moonPrevAngle = NaN;
         const curAngle = Math.atan2(pos.y, pos.x);
         let dA = curAngle - prevAngle;
         if (dA >  Math.PI) dA -= 2 * Math.PI;
         if (dA < -Math.PI) dA += 2 * Math.PI;
         totalAngle += Math.abs(dA);
         prevAngle   = curAngle;
-        if (i > 20 && totalAngle >= 2 * Math.PI * 1.02) break;  // slight overshoot so path closes
+        if (i > 20 && totalAngle >= 2 * Math.PI * 1.02) break;
       }
 
       pos.x += vel.x * effectiveDt;
@@ -387,7 +389,7 @@ export class MapView {
     } else {
       const orb    = computeOrbitalElements(base.pos, newVel);
       const period = isFinite(orb.period) && orb.period > 0 ? orb.period : 4 * 86_400;
-      pnTime    = Math.min(period * 2.5, 4 * 86_400);
+      pnTime    = Math.min(period * 2.5, 365 * 86_400);
       pnEarthDt = Math.max(10, Math.ceil(pnTime / 1_400));
     }
     this.postNodePath        = this._predictPath(base.pos, newVel, base.t, pnTime, pnEarthDt);

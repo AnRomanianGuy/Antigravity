@@ -191,18 +191,19 @@ export class PhysicsEngine {
     const inMoonSOI      = moonDist < MOON_SOI && moonDist > 0;
     const altAboveNearest = inMoonSOI ? moonDist - R_MOON : altitude;
 
-    let gravMag: number;
-    let gravForce: Vec2;
-    if (inMoonSOI) {
-      gravMag   = MU_MOON / (moonDist * moonDist);
-      gravForce = {
-        x: -(relToMoon.x / moonDist) * gravMag * body.mass,
-        y: -(relToMoon.y / moonDist) * gravMag * body.mass,
-      };
-    } else {
-      gravMag   = MU_EARTH / (r * r);
-      gravForce = vec2.scale(radial, -gravMag * body.mass);
-    }
+    // N-body gravity: Earth + Moon act simultaneously at all times.
+    // Patched conics (hard switch at SOI boundary) would cause a discontinuous
+    // velocity impulse; N-body gives a smooth, physically correct transition.
+    const earthGravMag = MU_EARTH / (r * r);
+    const moonGravMag  = moonDist > 0 ? MU_MOON / (moonDist * moonDist) : 0;
+    const gravForce: Vec2 = {
+      x: -radial.x * earthGravMag * body.mass
+         - (moonDist > 0 ? (relToMoon.x / moonDist) * moonGravMag * body.mass : 0),
+      y: -radial.y * earthGravMag * body.mass
+         - (moonDist > 0 ? (relToMoon.y / moonDist) * moonGravMag * body.mass : 0),
+    };
+    // HUD shows dominant body's surface gravity
+    const gravMag = inMoonSOI ? moonGravMag : earthGravMag;
 
     // ── Thrust (atmospheric-corrected) ──────────────────────────────────────
     // vacFrac = 0 at sea level, 1 in vacuum.  Isp and thrust both interpolate

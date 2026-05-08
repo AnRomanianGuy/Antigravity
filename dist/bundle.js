@@ -510,18 +510,13 @@
       const moonDist = Math.sqrt(relToMoon.x * relToMoon.x + relToMoon.y * relToMoon.y);
       const inMoonSOI = moonDist < MOON_SOI && moonDist > 0;
       const altAboveNearest = inMoonSOI ? moonDist - R_MOON : altitude;
-      let gravMag;
-      let gravForce;
-      if (inMoonSOI) {
-        gravMag = MU_MOON / (moonDist * moonDist);
-        gravForce = {
-          x: -(relToMoon.x / moonDist) * gravMag * body.mass,
-          y: -(relToMoon.y / moonDist) * gravMag * body.mass
-        };
-      } else {
-        gravMag = MU_EARTH / (r * r);
-        gravForce = vec2.scale(radial, -gravMag * body.mass);
-      }
+      const earthGravMag = MU_EARTH / (r * r);
+      const moonGravMag = moonDist > 0 ? MU_MOON / (moonDist * moonDist) : 0;
+      const gravForce = {
+        x: -radial.x * earthGravMag * body.mass - (moonDist > 0 ? relToMoon.x / moonDist * moonGravMag * body.mass : 0),
+        y: -radial.y * earthGravMag * body.mass - (moonDist > 0 ? relToMoon.y / moonDist * moonGravMag * body.mass : 0)
+      };
+      const gravMag = inMoonSOI ? moonGravMag : earthGravMag;
       const pressure = this.atmo.getPressure(altitude);
       const vacFrac = Math.max(0, 1 - pressure / 101325);
       let thrustMag = 0;
@@ -3427,7 +3422,7 @@
         } else {
           const orb = computeOrbitalElements(rocket.body.pos, rocket.body.vel);
           const period = isFinite(orb.period) && orb.period > 0 ? orb.period : 4 * 86400;
-          predTime = Math.min(period * 2.5, 4 * 86400);
+          predTime = Math.min(period * 2.5, 365 * 86400);
           predEarthDt = Math.max(10, Math.ceil(predTime / 1400));
         }
         this.cachedPath = this._predictPath(rocket.body.pos, rocket.body.vel, missionTime, predTime, predEarthDt);
@@ -3520,6 +3515,14 @@
           break;
         if (moonDist < R_MOON)
           break;
+        const earthGMag = MU_EARTH / (r * r);
+        vel.x += -(pos.x / r) * earthGMag * effectiveDt;
+        vel.y += -(pos.y / r) * earthGMag * effectiveDt;
+        if (moonDist > 0) {
+          const moonGMag = MU_MOON / (moonDist * moonDist);
+          vel.x += -(dx / moonDist) * moonGMag * effectiveDt;
+          vel.y += -(dy / moonDist) * moonGMag * effectiveDt;
+        }
         if (inSOI) {
           const moonRelAngle = Math.atan2(dy, dx);
           if (!isNaN(moonPrevAngle)) {
@@ -3533,14 +3536,8 @@
               break;
           }
           moonPrevAngle = moonRelAngle;
-          const gMag = MU_MOON / (moonDist * moonDist);
-          vel.x += -(dx / moonDist) * gMag * effectiveDt;
-          vel.y += -(dy / moonDist) * gMag * effectiveDt;
         } else {
           moonPrevAngle = NaN;
-          const gMag = MU_EARTH / (r * r);
-          vel.x += -(pos.x / r) * gMag * effectiveDt;
-          vel.y += -(pos.y / r) * gMag * effectiveDt;
           const curAngle = Math.atan2(pos.y, pos.x);
           let dA = curAngle - prevAngle;
           if (dA > Math.PI)
@@ -3605,7 +3602,7 @@
       } else {
         const orb = computeOrbitalElements(base.pos, newVel);
         const period = isFinite(orb.period) && orb.period > 0 ? orb.period : 4 * 86400;
-        pnTime = Math.min(period * 2.5, 4 * 86400);
+        pnTime = Math.min(period * 2.5, 365 * 86400);
         pnEarthDt = Math.max(10, Math.ceil(pnTime / 1400));
       }
       this.postNodePath = this._predictPath(base.pos, newVel, base.t, pnTime, pnEarthDt);
