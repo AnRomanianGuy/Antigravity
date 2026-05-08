@@ -55,11 +55,6 @@ Then open `http://localhost:5173`.
 - [x] Maneuver nodes + SAS (WIP)
 - [ ] Second gravity body (Moon,Sun,Mars,etc. WIP)
 - [ ] Orbital transfer planning (WIP)
-- [x] Heating and reentry
-- [x] Map view (AP/PE, trajectory)
-- [x] Maneuver nodes
-- [ ] Second gravity body (Moon,WIP)
-- [ ] Orbital transfer planning
 - [ ] Landing system
 - [ ] Advanced telemetry UI
 
