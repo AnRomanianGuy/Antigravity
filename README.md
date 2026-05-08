@@ -4,13 +4,9 @@ A lightweight 2D rocket simulator that runs in the browser. Build a rocket, laun
 
 Inspired by the physics of real spaceflight — gravity, thrust, atmospheric drag, and reentry heating are all modeled.
 
-<<<<<<< HEAD
-<<<<<<< HEAD
 Current version dev:d0.3.7
 Current version main:m0.2.1
 
-=======
-=======
 **[Play on GitHub Pages](https://anromanianguy.github.io/Antigravity/)**
 
 ---
