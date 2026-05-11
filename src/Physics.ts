@@ -117,6 +117,11 @@ export interface PhysicsFrame {
   // ── Celestial context ──
   inMoonSOI: boolean;       // true when inside Moon's sphere of influence
   altAboveNearest: number;  // altitude above nearest body surface (Moon if in SOI, Earth otherwise)
+  // ── Debug force vectors (world space, Newtons) ──
+  forceGravity: Vec2;
+  forceThrust: Vec2;
+  forceDrag: Vec2;
+  forceNet: Vec2;
 }
 
 // ─── Physics Engine ───────────────────────────────────────────────────────────
@@ -146,6 +151,10 @@ export class PhysicsEngine {
     noseExposure: 0,
     inMoonSOI: false,
     altAboveNearest: 0,
+    forceGravity: { x: 0, y: 0 },
+    forceThrust:  { x: 0, y: 0 },
+    forceDrag:    { x: 0, y: 0 },
+    forceNet:     { x: 0, y: 0 },
   };
 
   constructor(atmo: Atmosphere) {
@@ -251,19 +260,45 @@ export class PhysicsEngine {
     }
 
     // ── Aerodynamic Drag ────────────────────────────────────────────────────
-    // F_drag = −0.5 · ρ · |v|² · Cd · A · v̂
-    // Drag opposes the velocity vector.
+    // F_drag = −0.5 · ρ · |v|² · Cd · A · aoaFactor · v̂
+    // aoaFactor scales drag by how perpendicular the rocket is to airflow:
+    //   nose-on (sin²AOA ≈ 0) → 1.0×;  broadside (sin²AOA ≈ 1) → 4.0×
     const speed = vec2.length(body.vel);
     let dragForceMag = 0;
     const dragForce: Vec2 = vec2.zero();
 
+    // Airflow + nose exposure computed early so aero-torque can use them
+    const airflowDirEarly: Vec2 = speed > 0
+      ? { x: -body.vel.x / speed, y: -body.vel.y / speed }
+      : { x: 0, y: -1 };
+    const noseExposureEarly = vec2.dot(noseDir, airflowDirEarly);
+
     if (speed > 0 && rho > 0) {
-      const cd = rocket.getEffectiveDragCoeff();
+      const cd   = rocket.getEffectiveDragCoeff();
       const area = rocket.getCrossSection();
-      dragForceMag = 0.5 * rho * speed * speed * cd * area;
+      // sin²(AOA) = 1 − cos²(AOA) = 1 − noseExposure²
+      const sinSqAOA   = Math.max(0, 1.0 - noseExposureEarly * noseExposureEarly);
+      const aoaFactor  = 1.0 + 3.0 * sinSqAOA;   // 1× nose-on → 4× broadside
+      dragForceMag = 0.5 * rho * speed * speed * cd * area * aoaFactor;
       const velDir = vec2.normalize(body.vel);
       dragForce.x = -velDir.x * dragForceMag;
       dragForce.y = -velDir.y * dragForceMag;
+    }
+
+    // ── Aerodynamic stability torque ─────────────────────────────────────────
+    // Fins/body create a restoring moment that pushes the nose toward prograde.
+    // Uses the cross product of noseDir × progradeDir (signed sine of AOA).
+    // Only meaningful in significant atmosphere (rho > 0.01 kg/m³, speed > 50 m/s).
+    if (rho > 0.01 && speed > 50) {
+      const progradeX = body.vel.x / speed, progradeY = body.vel.y / speed;
+      // 2D cross product: positive → prograde is CCW from nose → rotate CW (increase angle)
+      const cross     = noseDir.x * progradeY - noseDir.y * progradeX;
+      const q         = 0.5 * rho * speed * speed;
+      const L = 30;
+      const I = Math.max(body.mass * L * L / 12, 1);
+      // Torque coefficient — tuned so a heavy rocket aligns within ~5 s in dense air
+      const stabilityAlpha = Math.min(2.0, (q * 3e-4 * rocket.getCrossSection()) / I);
+      body.angVel -= cross * stabilityAlpha * dt;
     }
 
     // ── Net force & acceleration ─────────────────────────────────────────────
@@ -309,16 +344,10 @@ export class PhysicsEngine {
     // ── Heating ─────────────────────────────────────────────────────────────
     const heatingIntensity = this.atmo.getHeatingIntensity(altitude, speed);
 
-    // Airflow direction: where air appears to come from (= opposite to velocity)
-    const airflowDir: Vec2 = speed > 0
-      ? { x: -body.vel.x / speed, y: -body.vel.y / speed }
-      : { x: 0, y: -1 };
-
-    // How much the nose faces into the airflow:
-    //   < 0 → nose is windward (ascending nose-first or reentry tail-shield)
-    //   > 0 → tail is windward (retrograde reentry without proper orientation)
-    const noseExposure = vec2.dot(noseDir, airflowDir);
-    const exposure = Math.abs(noseExposure);
+    // Reuse airflow/exposure already computed for drag above
+    const airflowDir  = airflowDirEarly;
+    const noseExposure = noseExposureEarly;
+    const exposure     = Math.abs(noseExposure);
 
     // Raw heat flux (game units, calibrated for ~20 s to destroy unshielded tank at peak)
     const heatFlux = rho > 0 ? HEAT_COEFF * rho * speed * speed * speed : 0;
@@ -410,6 +439,10 @@ export class PhysicsEngine {
       noseExposure,
       inMoonSOI,
       altAboveNearest,
+      forceGravity: { x: gravForce.x,   y: gravForce.y   },
+      forceThrust:  { x: thrustForce.x, y: thrustForce.y },
+      forceDrag:    { x: dragForce.x,   y: dragForce.y   },
+      forceNet:     { x: netForce.x,    y: netForce.y    },
     };
   }
 
@@ -484,6 +517,115 @@ export class PhysicsEngine {
     return 2 * Math.PI * Math.sqrt((r * r * r) / MU_EARTH);
   }
 
+  // ─── High-Warp Simplified Propagation ──────────────────────────────────────
+
+  /**
+   * Gravity-only acceleration at world position `pos` and mission time `t`.
+   * N-body: Earth + Moon. Result is in m/s² (not multiplied by mass).
+   */
+  private _gravAccel(pos: Vec2, t: number): Vec2 {
+    const r = Math.hypot(pos.x, pos.y);
+    if (r < 1) return { x: 0, y: 0 };
+    const earthAcc = MU_EARTH / (r * r);
+    const ex = -(pos.x / r) * earthAcc;
+    const ey = -(pos.y / r) * earthAcc;
+
+    const mp = getMoonPosition(t);
+    const rx = pos.x - mp.x, ry = pos.y - mp.y;
+    const md = Math.hypot(rx, ry);
+    if (md < 1) return { x: ex, y: ey };
+    const moonAcc = MU_MOON / (md * md);
+    return { x: ex - (rx / md) * moonAcc, y: ey - (ry / md) * moonAcc };
+  }
+
+  /** One RK4 gravity step for body at current missionTime. Does NOT advance missionTime. */
+  private _rk4GravityStep(body: RigidBody, dt: number): void {
+    const t = this.missionTime;
+    const h = dt, h2 = h / 2;
+
+    const a1 = this._gravAccel(body.pos, t);
+    const vx1 = body.vel.x, vy1 = body.vel.y;
+
+    const p2 = { x: body.pos.x + vx1 * h2, y: body.pos.y + vy1 * h2 };
+    const vx2 = body.vel.x + a1.x * h2, vy2 = body.vel.y + a1.y * h2;
+    const a2 = this._gravAccel(p2, t + h2);
+
+    const p3 = { x: body.pos.x + vx2 * h2, y: body.pos.y + vy2 * h2 };
+    const vx3 = body.vel.x + a2.x * h2, vy3 = body.vel.y + a2.y * h2;
+    const a3 = this._gravAccel(p3, t + h2);
+
+    const p4 = { x: body.pos.x + vx3 * h, y: body.pos.y + vy3 * h };
+    const vx4 = body.vel.x + a3.x * h, vy4 = body.vel.y + a3.y * h;
+    const a4 = this._gravAccel(p4, t + h);
+
+    body.pos.x += (vx1 + 2*vx2 + 2*vx3 + vx4) * h / 6;
+    body.pos.y += (vy1 + 2*vy2 + 2*vy3 + vy4) * h / 6;
+    body.vel.x += (a1.x + 2*a2.x + 2*a3.x + a4.x) * h / 6;
+    body.vel.y += (a1.y + 2*a2.y + 2*a3.y + a4.y) * h / 6;
+  }
+
+  /**
+   * Simplified warp-mode step: gravity only (N-body, RK4), no drag/heat/thrust.
+   * Splits `totalDt` into sub-steps of at most MAX_WARP_SUB_DT for stability.
+   * Also advances missionTime and updates lastFrame.
+   */
+  stepWarp(body: RigidBody, totalDt: number): void {
+    const MAX_SUB_DT = 30; // seconds — RK4 stays accurate up to ~60 s for LEO
+    const n     = Math.ceil(totalDt / MAX_SUB_DT);
+    const subDt = totalDt / n;
+
+    for (let i = 0; i < n; i++) {
+      this._rk4GravityStep(body, subDt);
+      this.missionTime += subDt;
+
+      // Surface clamp inside warp too (landing / crash)
+      const nr = Math.hypot(body.pos.x, body.pos.y);
+      if (nr < R_EARTH) {
+        const sd = { x: body.pos.x / nr, y: body.pos.y / nr };
+        body.pos.x = sd.x * R_EARTH;
+        body.pos.y = sd.y * R_EARTH;
+        const vr = body.vel.x * sd.x + body.vel.y * sd.y;
+        if (vr < 0) { body.vel.x -= sd.x * vr; body.vel.y -= sd.y * vr; }
+        body.vel.x *= 0.3; body.vel.y *= 0.3;
+        break;
+      }
+    }
+
+    // Update lastFrame for HUD display (no aero in warp)
+    const r   = Math.hypot(body.pos.x, body.pos.y);
+    const alt = r - R_EARTH;
+    const speed = Math.hypot(body.vel.x, body.vel.y);
+    const radial: Vec2 = r > 0 ? { x: body.pos.x / r, y: body.pos.y / r } : { x: 0, y: 1 };
+    const tangent: Vec2 = { x: -radial.y, y: radial.x };
+    const moonPos  = getMoonPosition(this.missionTime);
+    const relToMoon = { x: body.pos.x - moonPos.x, y: body.pos.y - moonPos.y };
+    const moonDist  = Math.hypot(relToMoon.x, relToMoon.y);
+    const inMoonSOI = moonDist < MOON_SOI && moonDist > 0;
+    const gravMag   = inMoonSOI ? MU_MOON / (moonDist * moonDist) : MU_EARTH / (r * r);
+    const gfx = -radial.x * gravMag * body.mass, gfy = -radial.y * gravMag * body.mass;
+    this.lastFrame = {
+      ...this.lastFrame,
+      altitude:        alt,
+      speed,
+      verticalSpeed:   body.vel.x * radial.x  + body.vel.y * radial.y,
+      horizontalSpeed: body.vel.x * tangent.x + body.vel.y * tangent.y,
+      dynamicPressure: 0,
+      gravityAcc:      gravMag,
+      dragForce:       0,
+      thrustForce:     0,
+      mach:            0,
+      heatingIntensity: 0,
+      heatFlux:        0,
+      inMoonSOI,
+      altAboveNearest: inMoonSOI ? moonDist - R_MOON : alt,
+      atmoLayerName:   this.atmo.getLayerName(alt),
+      forceGravity:    { x: gfx, y: gfy },
+      forceThrust:     { x: 0, y: 0 },
+      forceDrag:       { x: 0, y: 0 },
+      forceNet:        { x: gfx, y: gfy },
+    };
+  }
+
   /**
    * Reset mission time (called when starting a new launch).
    */
@@ -495,6 +637,8 @@ export class PhysicsEngine {
       dragForce: 0, thrustForce: 0, mach: 0, atmoLayerName: 'TROPOSPHERE',
       airflowDir: { x: 0, y: -1 }, heatFlux: 0, noseExposure: 0,
       inMoonSOI: false, altAboveNearest: 0,
+      forceGravity: { x: 0, y: 0 }, forceThrust: { x: 0, y: 0 },
+      forceDrag:    { x: 0, y: 0 }, forceNet:    { x: 0, y: 0 },
     };
   }
 

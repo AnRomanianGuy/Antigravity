@@ -74,6 +74,9 @@ export class Renderer {
   warpDownBtn = { x: 0, y: 0, w: 28, h: 28 };
   warpUpBtn   = { x: 0, y: 0, w: 28, h: 28 };
 
+  /** Previous mpp — used to smooth zoom across SOI-boundary jumps */
+  private _smoothMpp = -1;
+
   constructor(ctx: CanvasRenderingContext2D) {
     this.ctx = ctx;
     this.W = ctx.canvas.width;
@@ -93,7 +96,7 @@ export class Renderer {
    * @param frame       Latest physics frame data
    * @param throttle    Current throttle 0–1
    */
-  renderFlight(rocket: Rocket, frame: PhysicsFrame, throttle: number, missionTime = 0): void {
+  renderFlight(rocket: Rocket, frame: PhysicsFrame, throttle: number, missionTime = 0, advancedDebug = false): void {
     const ctx = this.ctx;
     const { H } = this;
 
@@ -103,9 +106,16 @@ export class Renderer {
     // at that breakpoint (continuous: both sides equal 220 000 m at 100 km).
     const alt = frame.altAboveNearest;
     const viewHeightM = alt < 100_000
-      ? 20_000 + alt * alt / 50_000                         // original near-surface formula
-      : 220_000 * Math.pow(alt / 100_000, 0.6);             // power-law: stays sane at any altitude
-    const mpp = isFinite(viewHeightM) && H > 0 ? viewHeightM / H : 1000;
+      ? 20_000 + alt * alt / 50_000
+      : 220_000 * Math.pow(alt / 100_000, 0.6);
+    const targetMpp = isFinite(viewHeightM) && H > 0 ? viewHeightM / H : 1000;
+
+    // Smooth out sudden zoom jumps at SOI boundaries (max 3× change per frame).
+    // On first frame (_smoothMpp < 0) snap immediately so there's no startup drift.
+    if (this._smoothMpp < 0) this._smoothMpp = targetMpp;
+    this._smoothMpp = Math.max(targetMpp / 3, Math.min(targetMpp * 3,
+      this._smoothMpp * 0.82 + targetMpp * 0.18));
+    const mpp = this._smoothMpp;
 
     const camera: Camera = {
       focus:          vec2.clone(rocket.body.pos),
@@ -168,6 +178,120 @@ export class Renderer {
     }
 
     ctx.restore();
+
+    // Debug force vectors — drawn in screen space after rocket transform is gone
+    if (advancedDebug) {
+      this._drawForceVectors(rocket, frame, rocketScreenPos);
+    }
+  }
+
+  // ─── Debug Force Vectors ──────────────────────────────────────────────────
+
+  private _drawForceVectors(rocket: Rocket, frame: PhysicsFrame, origin: Vec2): void {
+    const ctx = this.ctx;
+    const { W } = this;
+
+    const forces: { vec: Vec2; color: string; label: string; fullName: string }[] = [
+      { vec: frame.forceGravity, color: '#FFD700', label: 'G',   fullName: 'Gravity' },
+      { vec: frame.forceThrust,  color: '#00E5FF', label: 'T',   fullName: 'Thrust'  },
+      { vec: frame.forceDrag,    color: '#FF5555', label: 'D',   fullName: 'Drag'    },
+      { vec: frame.forceNet,     color: '#FFFFFF', label: 'NET', fullName: 'Net'     },
+    ];
+
+    // Scale arrows: largest force maps to MAX_ARROW_PX
+    const MAX_ARROW_PX = 130;
+    const maxMag = Math.max(...forces.map(f => Math.hypot(f.vec.x, f.vec.y)), 1);
+    const scale = MAX_ARROW_PX / maxMag;
+
+    const ox = origin.x, oy = origin.y;
+
+    ctx.save();
+
+    // ── Arrows (no background — drawn directly on the scene) ─────────────────
+    for (const f of forces) {
+      const mag = Math.hypot(f.vec.x, f.vec.y);
+      if (mag < 0.1) continue;
+
+      const len = mag * scale;
+      // World +y is up; canvas +y is down → negate y
+      const dx = (f.vec.x / mag) * len;
+      const dy = -(f.vec.y / mag) * len;
+      const ex = ox + dx, ey = oy + dy;
+
+      const isNet = f.label === 'NET';
+      ctx.strokeStyle = f.color;
+      ctx.lineWidth = isNet ? 2.5 : 1.8;
+      ctx.setLineDash(isNet ? [6, 3] : []);
+      ctx.globalAlpha = isNet ? 0.95 : 0.9;
+      ctx.beginPath();
+      ctx.moveTo(ox, oy);
+      ctx.lineTo(ex, ey);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Arrowhead
+      const headLen = Math.min(14, len * 0.28);
+      const angle = Math.atan2(dy, dx);
+      ctx.fillStyle = f.color;
+      ctx.beginPath();
+      ctx.moveTo(ex, ey);
+      ctx.lineTo(ex + Math.cos(angle + 2.7) * headLen, ey + Math.sin(angle + 2.7) * headLen);
+      ctx.lineTo(ex + Math.cos(angle - 2.7) * headLen, ey + Math.sin(angle - 2.7) * headLen);
+      ctx.closePath();
+      ctx.fill();
+
+      // Label + kN value just past the arrowhead tip
+      const tipDist = headLen + 4;
+      const lx = ex + Math.cos(angle) * tipDist;
+      const ly = ey + Math.sin(angle) * tipDist;
+      // Offset the text block perpendicular to the arrow by a few px so it
+      // doesn't overlap the shaft when the arrow points straight up/down.
+      const perpX = -Math.sin(angle) * 2;
+      const perpY =  Math.cos(angle) * 2;
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = f.color;
+      ctx.font = `bold 11px Courier New`;
+      ctx.textAlign = dx >= 0 ? 'left' : 'right';
+      ctx.fillText(f.label, lx + perpX, ly + perpY - 2);
+      ctx.font = '10px Courier New';
+      ctx.fillStyle = '#ffffff';
+      ctx.globalAlpha = 0.85;
+      ctx.fillText(`${(mag / 1000).toFixed(1)} kN`, lx + perpX, ly + perpY + 10);
+      ctx.globalAlpha = isNet ? 0.95 : 0.9;
+    }
+
+    // ── Top-centre HUD strip ──────────────────────────────────────────────────
+    // Four columns: G | T | D | NET  — each shows name + kN value
+    const hudY = 18;
+    const colW = 110;
+    const totalW = forces.length * colW;
+    const startX = W / 2 - totalW / 2;
+
+    ctx.globalAlpha = 1;
+    forces.forEach((f, i) => {
+      const mag = Math.hypot(f.vec.x, f.vec.y);
+      const cx = startX + i * colW + colW / 2;
+
+      // Colour-coded label
+      ctx.fillStyle = f.color;
+      ctx.font = 'bold 12px Courier New';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${f.label} — ${f.fullName}`, cx, hudY);
+
+      // kN value
+      ctx.fillStyle = mag < 0.1 ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.85)';
+      ctx.font = '11px Courier New';
+      ctx.fillText(`${(mag / 1000).toFixed(1)} kN`, cx, hudY + 15);
+    });
+
+    // Mass + title tag
+    ctx.fillStyle = 'rgba(180,210,255,0.5)';
+    ctx.font = '9px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText(`FORCE DEBUG  ·  mass ${(rocket.body.mass / 1000).toFixed(1)} t`, W / 2, hudY + 30);
+
+    ctx.globalAlpha = 1;
+    ctx.restore();
   }
 
   // ─── Earth & Atmosphere ───────────────────────────────────────────────────
@@ -179,6 +303,15 @@ export class Renderer {
 
     // Atmosphere glow halo (70 km thick)
     const atmoRadPx = (R_EARTH + 70_000) / cam.metersPerPixel;
+
+    // Skip entirely when Earth (+ atmosphere) has no overlap with the viewport.
+    // This prevents createRadialGradient from receiving extreme off-canvas
+    // coordinates (e.g. −1 000 000 px when near the Moon), which causes
+    // floating-point precision artifacts and incorrect canvas fills in Chrome.
+    if (
+      earthScreen.x + atmoRadPx < 0 || earthScreen.x - atmoRadPx > this.W ||
+      earthScreen.y + atmoRadPx < 0 || earthScreen.y - atmoRadPx > this.H
+    ) return;
     const atmoGrad = ctx.createRadialGradient(
       earthScreen.x, earthScreen.y, earthRadPx * 0.98,
       earthScreen.x, earthScreen.y, atmoRadPx,
@@ -269,15 +402,18 @@ export class Renderer {
     // World-space launch site: (0, R_EARTH) — top of Earth circle
     const ls = this._worldToScreen({ x: 0, y: R_EARTH }, cam);
     const mpp = cam.metersPerPixel;
+    const R_px = R_EARTH / mpp;
 
-    // Only draw when ground is within or just at the screen edge
+    // Skip when launchpad or Earth surface rings are entirely off-screen.
+    // The X check uses Earth's radius so the curved grass ring is culled
+    // correctly when the rocket has drifted far east or west of the pad.
     if (ls.y < -300 || ls.y > this.H + 5) return;
+    if (ls.x + R_px < 0 || ls.x - R_px > this.W) return;
 
     const ctx = this.ctx;
 
     // Grass and soil as arcs — follows Earth curvature at any altitude
     const earthCentre = this._worldToScreen({ x: 0, y: 0 }, cam);
-    const R_px   = R_EARTH / mpp;
     const grassH = Math.max(3, Math.min(18, 18 / mpp));
 
     // Bright grass ring at surface
@@ -738,6 +874,84 @@ export class Renderer {
         }
         break;
       }
+
+      case PartType.ENGINE_HEAVY: {
+        // Very wide nozzle bell — larger than ENGINE, radiates power
+        const bellW = w * 1.45;
+        ctx.beginPath();
+        ctx.moveTo(x + (w - bellW) / 2, y + h * 0.60);
+        ctx.lineTo(x + (w - bellW) / 2 - bellW * 0.08, y + h);
+        ctx.lineTo(x + (w + bellW) / 2 + bellW * 0.08, y + h);
+        ctx.lineTo(x + (w + bellW) / 2, y + h * 0.60);
+        ctx.closePath();
+        ctx.fillStyle = '#6a1a04';
+        ctx.fill();
+        // Engine turbopump housing
+        ctx.fillStyle = '#9a4422';
+        ctx.fillRect(x + w * 0.25, y + h * 0.30, w * 0.50, h * 0.30);
+        // Gimbal mount ring
+        ctx.strokeStyle = '#cc5522';
+        ctx.lineWidth = 2.5 * scale;
+        ctx.strokeRect(x + w * 0.15, y + h * 0.55, w * 0.70, h * 0.08);
+        break;
+      }
+
+      case PartType.ENGINE_NTR: {
+        // Nuclear thermal — hexagonal reactor shielding + narrow exhaust nozzle
+        const nx = x + w * 0.5;
+        // Reactor pressure vessel (hexagon-ish)
+        ctx.beginPath();
+        ctx.rect(x + w * 0.10, y + h * 0.08, w * 0.80, h * 0.52);
+        ctx.fillStyle = '#0e3a1a';
+        ctx.fill();
+        ctx.strokeStyle = '#2a9a4a';
+        ctx.lineWidth = 1.5 * scale;
+        ctx.stroke();
+        // Radiation warning stripes
+        for (let i = 0; i < 3; i++) {
+          const sy = y + h * (0.14 + i * 0.15);
+          ctx.fillStyle = i % 2 === 0 ? 'rgba(0,200,80,0.25)' : 'rgba(0,80,20,0.20)';
+          ctx.fillRect(x + w * 0.10, sy, w * 0.80, h * 0.12);
+        }
+        // Narrow exhaust nozzle
+        const nozzW = w * 0.55;
+        ctx.beginPath();
+        ctx.moveTo(nx - nozzW * 0.30, y + h * 0.60);
+        ctx.lineTo(nx - nozzW * 0.50, y + h);
+        ctx.lineTo(nx + nozzW * 0.50, y + h);
+        ctx.lineTo(nx + nozzW * 0.30, y + h * 0.60);
+        ctx.closePath();
+        ctx.fillStyle = '#1a5a2a';
+        ctx.fill();
+        // Reactor core glow dot
+        ctx.beginPath();
+        ctx.arc(nx, y + h * 0.28, 4 * scale, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(0,255,100,0.70)';
+        ctx.fill();
+        break;
+      }
+
+      case PartType.FUEL_TANK_XXL: {
+        // Fuel level bar with 4 tick marks (super-large tank)
+        const frac = part.def.maxFuelMass > 0 ? part.fuelRemaining / part.def.maxFuelMass : 0;
+        const barH = (h - 8 * scale) * frac;
+        ctx.fillStyle = frac > 0.3 ? 'rgba(0,180,90,0.30)' : 'rgba(255,60,0,0.42)';
+        ctx.fillRect(x + w * 0.20, y + (h - 4 * scale) - barH, w * 0.60, barH);
+        // Four tick marks (25 % intervals)
+        ctx.strokeStyle = 'rgba(150,180,200,0.35)';
+        ctx.lineWidth = scale;
+        for (let t = 1; t <= 3; t++) {
+          const ty = y + h * 0.05 + (h * 0.90) * (1 - t * 0.25);
+          ctx.beginPath();
+          ctx.moveTo(x + w * 0.20, ty);
+          ctx.lineTo(x + w * 0.35, ty);
+          ctx.stroke();
+        }
+        // Darker stripe at mid-point to distinguish from XL tank
+        ctx.fillStyle = 'rgba(30,50,70,0.50)';
+        ctx.fillRect(x, y + h * 0.495, w, h * 0.010);
+        break;
+      }
     }
   }
 
@@ -863,7 +1077,7 @@ export class Renderer {
    *  25–45 kPa  : stronger streaks + edge lines
    *  45–80 kPa  : haze turns orange, streaks turn orange, sparks appear
    */
-  private _drawAscentAero(rocket: Rocket, scale: number, frame: PhysicsFrame, totalH: number, maxW: number): void {
+  private _drawAscentAero(_rocket: Rocket, scale: number, frame: PhysicsFrame, totalH: number, maxW: number): void {
     const q = frame.dynamicPressure;
     if (q < Renderer.Q_STREAK_START) return;
 
@@ -1020,7 +1234,7 @@ export class Renderer {
    * noseExposure < 0 → nose (local y = -halfH) is windward.
    * noseExposure > 0 → tail (local y = +halfH) is windward.
    */
-  private _drawAeroHeating(rocket: Rocket, scale: number, frame: PhysicsFrame, totalH: number, maxW: number): void {
+  private _drawAeroHeating(_rocket: Rocket, scale: number, frame: PhysicsFrame, totalH: number, maxW: number): void {
     const ctx       = this.ctx;
     const t         = this.time;
     const intensity = Math.min(frame.heatFlux / MAX_HEAT_FLUX, 1.0);

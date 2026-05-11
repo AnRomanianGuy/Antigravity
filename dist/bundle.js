@@ -42,7 +42,7 @@
 
   // src/Part.ts
   function isEnginePart(type) {
-    return type === 3 /* ENGINE */ || type === 4 /* ENGINE_VACUUM */ || type === 9 /* ENGINE_VAC_ADV */ || type === 8 /* SRB */;
+    return type === 3 /* ENGINE */ || type === 4 /* ENGINE_VACUUM */ || type === 9 /* ENGINE_VAC_ADV */ || type === 14 /* ENGINE_HEAVY */ || type === 15 /* ENGINE_NTR */ || type === 8 /* SRB */;
   }
   function isDecouplerPart(type) {
     return type === 5 /* DECOUPLER */ || type === 13 /* DECOUPLER_HEAVY */;
@@ -332,6 +332,83 @@
       heatResistance: 0.98
       // vs Mk1 0.95
     },
+    // ── Orbital / transfer-capable parts ─────────────────────────────────────────
+    /**
+     * K1 Mainsail — heavy first-stage booster.
+     * 1 500 kN thrust at sea level; Isp 315 s vac / 285 s SL.
+     * Lets a single stack reach orbit without needing SRBs.
+     */
+    [14 /* ENGINE_HEAVY */]: {
+      type: 14 /* ENGINE_HEAVY */,
+      name: "K1 Mainsail",
+      dryMass: 3e3,
+      maxFuelMass: 0,
+      maxThrust: 15e5,
+      // 1 500 kN vacuum
+      isp: 315,
+      ispSL: 285,
+      thrustSL: 0.93,
+      // 93 % at sea level = 1 395 kN
+      dragCoeff: 0.55,
+      crossSection: 2.54,
+      renderW: 62,
+      renderH: 82,
+      color: "#7a2a0a",
+      description: "Heavy first-stage engine. 1 500 kN vac / 1 395 kN SL. Gets large rockets to orbit.",
+      maxTemperature: 2200,
+      heatResistance: 0.6
+    },
+    /**
+     * LV-N Nerva — nuclear thermal engine.
+     * 35 kN / Isp 800 s vacuum; nearly useless below 50 km.
+     * Pairs with FL-TX2400 for enormous transfer-stage ΔV.
+     */
+    [15 /* ENGINE_NTR */]: {
+      type: 15 /* ENGINE_NTR */,
+      name: "LV-N Nerva",
+      dryMass: 2200,
+      maxFuelMass: 0,
+      maxThrust: 35e3,
+      // 35 kN vacuum
+      isp: 800,
+      // nuclear thermal Isp
+      ispSL: 50,
+      // terrible — hot hydrogen stalls in thick air
+      thrustSL: 0.08,
+      // 8 % at sea level
+      altitudeVacuum: 7e4,
+      // full efficiency above Kármán line
+      dragCoeff: 0.42,
+      crossSection: 2.1,
+      renderW: 52,
+      renderH: 72,
+      color: "#1a5a2a",
+      description: "Nuclear thermal engine. Isp 800 s / 35 kN vac. Useless below 50 km. Paired with FL-TX2400 for deep-space transfers.",
+      maxTemperature: 3e3,
+      heatResistance: 0.75
+    },
+    /**
+     * FL-TX2400 — super-large transfer tank.
+     * 24 t propellant; intended for NTR-powered orbital or interplanetary stages.
+     */
+    [16 /* FUEL_TANK_XXL */]: {
+      type: 16 /* FUEL_TANK_XXL */,
+      name: "FL-TX2400 Tank",
+      dryMass: 1800,
+      maxFuelMass: 24e3,
+      maxThrust: 0,
+      isp: 0,
+      ispSL: 0,
+      thrustSL: 0,
+      dragCoeff: 0.15,
+      crossSection: 2.1,
+      renderW: 52,
+      renderH: 280,
+      color: "#1e2e3e",
+      description: "Super-large transfer tank (24 t propellant). Use with Nerva NTR for massive \u0394V budgets.",
+      maxTemperature: 1400,
+      heatResistance: 0.15
+    },
     /**
      * TR-XL Heavy Decoupler — engineered for large upper stages.
      * Higher mass tolerance; applies a small separation impulse on firing.
@@ -421,7 +498,11 @@
     10 /* FUEL_TANK_XL */,
     9 /* ENGINE_VAC_ADV */,
     13 /* DECOUPLER_HEAVY */,
-    12 /* HEAT_SHIELD_HEAVY */
+    12 /* HEAT_SHIELD_HEAVY */,
+    // ── Orbital / transfer ───────────────────────────────────────────────────────
+    14 /* ENGINE_HEAVY */,
+    16 /* FUEL_TANK_XXL */,
+    15 /* ENGINE_NTR */
   ];
 
   // src/Physics.ts
@@ -481,7 +562,11 @@
         heatFlux: 0,
         noseExposure: 0,
         inMoonSOI: false,
-        altAboveNearest: 0
+        altAboveNearest: 0,
+        forceGravity: { x: 0, y: 0 },
+        forceThrust: { x: 0, y: 0 },
+        forceDrag: { x: 0, y: 0 },
+        forceNet: { x: 0, y: 0 }
       };
       this.atmo = atmo;
     }
@@ -553,13 +638,26 @@
       const speed = vec2.length(body.vel);
       let dragForceMag = 0;
       const dragForce = vec2.zero();
+      const airflowDirEarly = speed > 0 ? { x: -body.vel.x / speed, y: -body.vel.y / speed } : { x: 0, y: -1 };
+      const noseExposureEarly = vec2.dot(noseDir, airflowDirEarly);
       if (speed > 0 && rho > 0) {
         const cd = rocket.getEffectiveDragCoeff();
         const area = rocket.getCrossSection();
-        dragForceMag = 0.5 * rho * speed * speed * cd * area;
+        const sinSqAOA = Math.max(0, 1 - noseExposureEarly * noseExposureEarly);
+        const aoaFactor = 1 + 3 * sinSqAOA;
+        dragForceMag = 0.5 * rho * speed * speed * cd * area * aoaFactor;
         const velDir = vec2.normalize(body.vel);
         dragForce.x = -velDir.x * dragForceMag;
         dragForce.y = -velDir.y * dragForceMag;
+      }
+      if (rho > 0.01 && speed > 50) {
+        const progradeX = body.vel.x / speed, progradeY = body.vel.y / speed;
+        const cross = noseDir.x * progradeY - noseDir.y * progradeX;
+        const q = 0.5 * rho * speed * speed;
+        const L = 30;
+        const I = Math.max(body.mass * L * L / 12, 1);
+        const stabilityAlpha = Math.min(2, q * 3e-4 * rocket.getCrossSection() / I);
+        body.angVel -= cross * stabilityAlpha * dt;
       }
       const netForce = {
         x: gravForce.x + thrustForce.x + dragForce.x,
@@ -586,8 +684,8 @@
       body.angVel *= ANGULAR_DAMPING;
       body.angle += body.angVel * dt;
       const heatingIntensity = this.atmo.getHeatingIntensity(altitude, speed);
-      const airflowDir = speed > 0 ? { x: -body.vel.x / speed, y: -body.vel.y / speed } : { x: 0, y: -1 };
-      const noseExposure = vec2.dot(noseDir, airflowDir);
+      const airflowDir = airflowDirEarly;
+      const noseExposure = noseExposureEarly;
       const exposure = Math.abs(noseExposure);
       const heatFlux = rho > 0 ? HEAT_COEFF * rho * speed * speed * speed : 0;
       if (heatFlux > 500 && exposure > 0.05) {
@@ -656,7 +754,11 @@
         heatFlux,
         noseExposure,
         inMoonSOI,
-        altAboveNearest
+        altAboveNearest,
+        forceGravity: { x: gravForce.x, y: gravForce.y },
+        forceThrust: { x: thrustForce.x, y: thrustForce.y },
+        forceDrag: { x: dragForce.x, y: dragForce.y },
+        forceNet: { x: netForce.x, y: netForce.y }
       };
     }
     // ─── Utility Methods ────────────────────────────────────────────────────────
@@ -716,6 +818,106 @@
       const r = R_EARTH + altitudeM;
       return 2 * Math.PI * Math.sqrt(r * r * r / MU_EARTH);
     }
+    // ─── High-Warp Simplified Propagation ──────────────────────────────────────
+    /**
+     * Gravity-only acceleration at world position `pos` and mission time `t`.
+     * N-body: Earth + Moon. Result is in m/s² (not multiplied by mass).
+     */
+    _gravAccel(pos, t) {
+      const r = Math.hypot(pos.x, pos.y);
+      if (r < 1)
+        return { x: 0, y: 0 };
+      const earthAcc = MU_EARTH / (r * r);
+      const ex = -(pos.x / r) * earthAcc;
+      const ey = -(pos.y / r) * earthAcc;
+      const mp = getMoonPosition(t);
+      const rx = pos.x - mp.x, ry = pos.y - mp.y;
+      const md = Math.hypot(rx, ry);
+      if (md < 1)
+        return { x: ex, y: ey };
+      const moonAcc = MU_MOON / (md * md);
+      return { x: ex - rx / md * moonAcc, y: ey - ry / md * moonAcc };
+    }
+    /** One RK4 gravity step for body at current missionTime. Does NOT advance missionTime. */
+    _rk4GravityStep(body, dt) {
+      const t = this.missionTime;
+      const h = dt, h2 = h / 2;
+      const a1 = this._gravAccel(body.pos, t);
+      const vx1 = body.vel.x, vy1 = body.vel.y;
+      const p2 = { x: body.pos.x + vx1 * h2, y: body.pos.y + vy1 * h2 };
+      const vx2 = body.vel.x + a1.x * h2, vy2 = body.vel.y + a1.y * h2;
+      const a2 = this._gravAccel(p2, t + h2);
+      const p3 = { x: body.pos.x + vx2 * h2, y: body.pos.y + vy2 * h2 };
+      const vx3 = body.vel.x + a2.x * h2, vy3 = body.vel.y + a2.y * h2;
+      const a3 = this._gravAccel(p3, t + h2);
+      const p4 = { x: body.pos.x + vx3 * h, y: body.pos.y + vy3 * h };
+      const vx4 = body.vel.x + a3.x * h, vy4 = body.vel.y + a3.y * h;
+      const a4 = this._gravAccel(p4, t + h);
+      body.pos.x += (vx1 + 2 * vx2 + 2 * vx3 + vx4) * h / 6;
+      body.pos.y += (vy1 + 2 * vy2 + 2 * vy3 + vy4) * h / 6;
+      body.vel.x += (a1.x + 2 * a2.x + 2 * a3.x + a4.x) * h / 6;
+      body.vel.y += (a1.y + 2 * a2.y + 2 * a3.y + a4.y) * h / 6;
+    }
+    /**
+     * Simplified warp-mode step: gravity only (N-body, RK4), no drag/heat/thrust.
+     * Splits `totalDt` into sub-steps of at most MAX_WARP_SUB_DT for stability.
+     * Also advances missionTime and updates lastFrame.
+     */
+    stepWarp(body, totalDt) {
+      const MAX_SUB_DT = 30;
+      const n = Math.ceil(totalDt / MAX_SUB_DT);
+      const subDt = totalDt / n;
+      for (let i = 0; i < n; i++) {
+        this._rk4GravityStep(body, subDt);
+        this.missionTime += subDt;
+        const nr = Math.hypot(body.pos.x, body.pos.y);
+        if (nr < R_EARTH) {
+          const sd = { x: body.pos.x / nr, y: body.pos.y / nr };
+          body.pos.x = sd.x * R_EARTH;
+          body.pos.y = sd.y * R_EARTH;
+          const vr = body.vel.x * sd.x + body.vel.y * sd.y;
+          if (vr < 0) {
+            body.vel.x -= sd.x * vr;
+            body.vel.y -= sd.y * vr;
+          }
+          body.vel.x *= 0.3;
+          body.vel.y *= 0.3;
+          break;
+        }
+      }
+      const r = Math.hypot(body.pos.x, body.pos.y);
+      const alt = r - R_EARTH;
+      const speed = Math.hypot(body.vel.x, body.vel.y);
+      const radial = r > 0 ? { x: body.pos.x / r, y: body.pos.y / r } : { x: 0, y: 1 };
+      const tangent = { x: -radial.y, y: radial.x };
+      const moonPos = getMoonPosition(this.missionTime);
+      const relToMoon = { x: body.pos.x - moonPos.x, y: body.pos.y - moonPos.y };
+      const moonDist = Math.hypot(relToMoon.x, relToMoon.y);
+      const inMoonSOI = moonDist < MOON_SOI && moonDist > 0;
+      const gravMag = inMoonSOI ? MU_MOON / (moonDist * moonDist) : MU_EARTH / (r * r);
+      const gfx = -radial.x * gravMag * body.mass, gfy = -radial.y * gravMag * body.mass;
+      this.lastFrame = {
+        ...this.lastFrame,
+        altitude: alt,
+        speed,
+        verticalSpeed: body.vel.x * radial.x + body.vel.y * radial.y,
+        horizontalSpeed: body.vel.x * tangent.x + body.vel.y * tangent.y,
+        dynamicPressure: 0,
+        gravityAcc: gravMag,
+        dragForce: 0,
+        thrustForce: 0,
+        mach: 0,
+        heatingIntensity: 0,
+        heatFlux: 0,
+        inMoonSOI,
+        altAboveNearest: inMoonSOI ? moonDist - R_MOON : alt,
+        atmoLayerName: this.atmo.getLayerName(alt),
+        forceGravity: { x: gfx, y: gfy },
+        forceThrust: { x: 0, y: 0 },
+        forceDrag: { x: 0, y: 0 },
+        forceNet: { x: gfx, y: gfy }
+      };
+    }
     /**
      * Reset mission time (called when starting a new launch).
      */
@@ -737,7 +939,11 @@
         heatFlux: 0,
         noseExposure: 0,
         inMoonSOI: false,
-        altAboveNearest: 0
+        altAboveNearest: 0,
+        forceGravity: { x: 0, y: 0 },
+        forceThrust: { x: 0, y: 0 },
+        forceDrag: { x: 0, y: 0 },
+        forceNet: { x: 0, y: 0 }
       };
     }
     /**
@@ -1058,12 +1264,65 @@
       const engines = this.parts.filter((p) => isEnginePart(p.def.type));
       if (engines.length === 0)
         return 0;
-      const isp = this.getEffectiveIsp();
+      const totalThrust = engines.reduce((s, p) => s + p.def.maxThrust, 0);
+      const weightedIsp = engines.reduce((s, p) => s + p.def.maxThrust * p.def.isp, 0);
+      const isp = totalThrust > 0 ? weightedIsp / totalThrust : 0;
+      if (isp <= 0)
+        return 0;
       const m0 = this.getTotalMass();
       const m_dry = this.parts.reduce((s, p) => s + p.def.dryMass, 0);
       if (m_dry <= 0 || m0 <= m_dry)
         return 0;
       return isp * G0 * Math.log(m0 / m_dry);
+    }
+    /**
+     * Burn estimate for a planned maneuver of `plannedDV` m/s.
+     *
+     * Selects candidate engines in priority order:
+     *   1. Currently active (firing) engines
+     *   2. Engines in the next staged (but not yet activated) stage
+     *   3. Any surviving engine (last resort)
+     *
+     * Returns vacuum Isp, vacuum thrust, burn time, available ΔV, and
+     * whether any engines were found.  All values are 0 / Infinity if no
+     * engines are present.
+     */
+    getBurnEstimate(plannedDV) {
+      const NO_ENGINE = { isp: 0, thrust: 0, burnTime: Infinity, dvAvailable: 0, hasEngines: false };
+      let candidates = this.parts.filter(
+        (p) => p.isActive && isEnginePart(p.def.type) && !p.isDestroyed
+      );
+      if (candidates.length === 0) {
+        const nextStages = this.stages.filter((s) => s.stageIndex > this.currentStage).sort((a, b) => a.stageIndex - b.stageIndex);
+        for (const stage of nextStages) {
+          const ids = new Set(stage.partIds);
+          const eng = this.parts.filter(
+            (p) => ids.has(p.id) && isEnginePart(p.def.type) && !p.isDestroyed
+          );
+          if (eng.length > 0) {
+            candidates = eng;
+            break;
+          }
+        }
+      }
+      if (candidates.length === 0) {
+        candidates = this.parts.filter((p) => isEnginePart(p.def.type) && !p.isDestroyed);
+      }
+      if (candidates.length === 0)
+        return NO_ENGINE;
+      const thrust = candidates.reduce((s, p) => s + p.def.maxThrust, 0);
+      const isp = thrust > 0 ? candidates.reduce((s, p) => s + p.def.maxThrust * p.def.isp, 0) / thrust : 0;
+      if (isp <= 0 || thrust <= 0)
+        return NO_ENGINE;
+      const m0 = this.getTotalMass();
+      const fuel = this.totalFuelRemaining;
+      const mdry = m0 - fuel;
+      const dvAvailable = mdry > 0 && m0 > mdry ? isp * G0 * Math.log(m0 / mdry) : 0;
+      const dvCapped = Math.min(plannedDV, dvAvailable + 1);
+      const massFlow = thrust / (isp * G0);
+      const m1 = m0 * Math.exp(-dvCapped / (isp * G0));
+      const burnTime = massFlow > 0 ? (m0 - m1) / massFlow : Infinity;
+      return { isp, thrust, burnTime, dvAvailable, hasEngines: true };
     }
     // ─── Private Helpers ────────────────────────────────────────────────────────
     _refreshMass() {
@@ -1244,6 +1503,8 @@
       /** Hit areas for warp buttons — updated each HUD render, read by Game.ts */
       this.warpDownBtn = { x: 0, y: 0, w: 28, h: 28 };
       this.warpUpBtn = { x: 0, y: 0, w: 28, h: 28 };
+      /** Previous mpp — used to smooth zoom across SOI-boundary jumps */
+      this._smoothMpp = -1;
       this.ctx = ctx;
       this.W = ctx.canvas.width;
       this.H = ctx.canvas.height;
@@ -1259,12 +1520,19 @@
      * @param frame       Latest physics frame data
      * @param throttle    Current throttle 0–1
      */
-    renderFlight(rocket, frame, throttle, missionTime = 0) {
+    renderFlight(rocket, frame, throttle, missionTime = 0, advancedDebug = false) {
       const ctx = this.ctx;
       const { H } = this;
       const alt = frame.altAboveNearest;
       const viewHeightM = alt < 1e5 ? 2e4 + alt * alt / 5e4 : 22e4 * Math.pow(alt / 1e5, 0.6);
-      const mpp = isFinite(viewHeightM) && H > 0 ? viewHeightM / H : 1e3;
+      const targetMpp = isFinite(viewHeightM) && H > 0 ? viewHeightM / H : 1e3;
+      if (this._smoothMpp < 0)
+        this._smoothMpp = targetMpp;
+      this._smoothMpp = Math.max(targetMpp / 3, Math.min(
+        targetMpp * 3,
+        this._smoothMpp * 0.82 + targetMpp * 0.18
+      ));
+      const mpp = this._smoothMpp;
       const camera = {
         focus: vec2.clone(rocket.body.pos),
         metersPerPixel: mpp
@@ -1300,6 +1568,90 @@
         this._drawAeroHeating(rocket, partScale, frame, stackH, stackMaxW);
       }
       ctx.restore();
+      if (advancedDebug) {
+        this._drawForceVectors(rocket, frame, rocketScreenPos);
+      }
+    }
+    // ─── Debug Force Vectors ──────────────────────────────────────────────────
+    _drawForceVectors(rocket, frame, origin) {
+      const ctx = this.ctx;
+      const { W } = this;
+      const forces = [
+        { vec: frame.forceGravity, color: "#FFD700", label: "G", fullName: "Gravity" },
+        { vec: frame.forceThrust, color: "#00E5FF", label: "T", fullName: "Thrust" },
+        { vec: frame.forceDrag, color: "#FF5555", label: "D", fullName: "Drag" },
+        { vec: frame.forceNet, color: "#FFFFFF", label: "NET", fullName: "Net" }
+      ];
+      const MAX_ARROW_PX = 130;
+      const maxMag = Math.max(...forces.map((f) => Math.hypot(f.vec.x, f.vec.y)), 1);
+      const scale = MAX_ARROW_PX / maxMag;
+      const ox = origin.x, oy = origin.y;
+      ctx.save();
+      for (const f of forces) {
+        const mag = Math.hypot(f.vec.x, f.vec.y);
+        if (mag < 0.1)
+          continue;
+        const len = mag * scale;
+        const dx = f.vec.x / mag * len;
+        const dy = -(f.vec.y / mag) * len;
+        const ex = ox + dx, ey = oy + dy;
+        const isNet = f.label === "NET";
+        ctx.strokeStyle = f.color;
+        ctx.lineWidth = isNet ? 2.5 : 1.8;
+        ctx.setLineDash(isNet ? [6, 3] : []);
+        ctx.globalAlpha = isNet ? 0.95 : 0.9;
+        ctx.beginPath();
+        ctx.moveTo(ox, oy);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        const headLen = Math.min(14, len * 0.28);
+        const angle = Math.atan2(dy, dx);
+        ctx.fillStyle = f.color;
+        ctx.beginPath();
+        ctx.moveTo(ex, ey);
+        ctx.lineTo(ex + Math.cos(angle + 2.7) * headLen, ey + Math.sin(angle + 2.7) * headLen);
+        ctx.lineTo(ex + Math.cos(angle - 2.7) * headLen, ey + Math.sin(angle - 2.7) * headLen);
+        ctx.closePath();
+        ctx.fill();
+        const tipDist = headLen + 4;
+        const lx = ex + Math.cos(angle) * tipDist;
+        const ly = ey + Math.sin(angle) * tipDist;
+        const perpX = -Math.sin(angle) * 2;
+        const perpY = Math.cos(angle) * 2;
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = f.color;
+        ctx.font = `bold 11px Courier New`;
+        ctx.textAlign = dx >= 0 ? "left" : "right";
+        ctx.fillText(f.label, lx + perpX, ly + perpY - 2);
+        ctx.font = "10px Courier New";
+        ctx.fillStyle = "#ffffff";
+        ctx.globalAlpha = 0.85;
+        ctx.fillText(`${(mag / 1e3).toFixed(1)} kN`, lx + perpX, ly + perpY + 10);
+        ctx.globalAlpha = isNet ? 0.95 : 0.9;
+      }
+      const hudY = 18;
+      const colW = 110;
+      const totalW = forces.length * colW;
+      const startX = W / 2 - totalW / 2;
+      ctx.globalAlpha = 1;
+      forces.forEach((f, i) => {
+        const mag = Math.hypot(f.vec.x, f.vec.y);
+        const cx = startX + i * colW + colW / 2;
+        ctx.fillStyle = f.color;
+        ctx.font = "bold 12px Courier New";
+        ctx.textAlign = "center";
+        ctx.fillText(`${f.label} \u2014 ${f.fullName}`, cx, hudY);
+        ctx.fillStyle = mag < 0.1 ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.85)";
+        ctx.font = "11px Courier New";
+        ctx.fillText(`${(mag / 1e3).toFixed(1)} kN`, cx, hudY + 15);
+      });
+      ctx.fillStyle = "rgba(180,210,255,0.5)";
+      ctx.font = "9px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText(`FORCE DEBUG  \xB7  mass ${(rocket.body.mass / 1e3).toFixed(1)} t`, W / 2, hudY + 30);
+      ctx.globalAlpha = 1;
+      ctx.restore();
     }
     // ─── Earth & Atmosphere ───────────────────────────────────────────────────
     _drawEarth(cam) {
@@ -1307,6 +1659,8 @@
       const earthScreen = this._worldToScreen({ x: 0, y: 0 }, cam);
       const earthRadPx = R_EARTH / cam.metersPerPixel;
       const atmoRadPx = (R_EARTH + 7e4) / cam.metersPerPixel;
+      if (earthScreen.x + atmoRadPx < 0 || earthScreen.x - atmoRadPx > this.W || earthScreen.y + atmoRadPx < 0 || earthScreen.y - atmoRadPx > this.H)
+        return;
       const atmoGrad = ctx.createRadialGradient(
         earthScreen.x,
         earthScreen.y,
@@ -1390,11 +1744,13 @@
     _drawLaunchpad(cam) {
       const ls = this._worldToScreen({ x: 0, y: R_EARTH }, cam);
       const mpp = cam.metersPerPixel;
+      const R_px = R_EARTH / mpp;
       if (ls.y < -300 || ls.y > this.H + 5)
+        return;
+      if (ls.x + R_px < 0 || ls.x - R_px > this.W)
         return;
       const ctx = this.ctx;
       const earthCentre = this._worldToScreen({ x: 0, y: 0 }, cam);
-      const R_px = R_EARTH / mpp;
       const grassH = Math.max(3, Math.min(18, 18 / mpp));
       ctx.beginPath();
       ctx.arc(earthCentre.x, earthCentre.y, R_px - grassH * 0.5, 0, Math.PI * 2);
@@ -1803,6 +2159,70 @@
           }
           break;
         }
+        case 14 /* ENGINE_HEAVY */: {
+          const bellW = w * 1.45;
+          ctx.beginPath();
+          ctx.moveTo(x + (w - bellW) / 2, y + h * 0.6);
+          ctx.lineTo(x + (w - bellW) / 2 - bellW * 0.08, y + h);
+          ctx.lineTo(x + (w + bellW) / 2 + bellW * 0.08, y + h);
+          ctx.lineTo(x + (w + bellW) / 2, y + h * 0.6);
+          ctx.closePath();
+          ctx.fillStyle = "#6a1a04";
+          ctx.fill();
+          ctx.fillStyle = "#9a4422";
+          ctx.fillRect(x + w * 0.25, y + h * 0.3, w * 0.5, h * 0.3);
+          ctx.strokeStyle = "#cc5522";
+          ctx.lineWidth = 2.5 * scale;
+          ctx.strokeRect(x + w * 0.15, y + h * 0.55, w * 0.7, h * 0.08);
+          break;
+        }
+        case 15 /* ENGINE_NTR */: {
+          const nx = x + w * 0.5;
+          ctx.beginPath();
+          ctx.rect(x + w * 0.1, y + h * 0.08, w * 0.8, h * 0.52);
+          ctx.fillStyle = "#0e3a1a";
+          ctx.fill();
+          ctx.strokeStyle = "#2a9a4a";
+          ctx.lineWidth = 1.5 * scale;
+          ctx.stroke();
+          for (let i = 0; i < 3; i++) {
+            const sy = y + h * (0.14 + i * 0.15);
+            ctx.fillStyle = i % 2 === 0 ? "rgba(0,200,80,0.25)" : "rgba(0,80,20,0.20)";
+            ctx.fillRect(x + w * 0.1, sy, w * 0.8, h * 0.12);
+          }
+          const nozzW = w * 0.55;
+          ctx.beginPath();
+          ctx.moveTo(nx - nozzW * 0.3, y + h * 0.6);
+          ctx.lineTo(nx - nozzW * 0.5, y + h);
+          ctx.lineTo(nx + nozzW * 0.5, y + h);
+          ctx.lineTo(nx + nozzW * 0.3, y + h * 0.6);
+          ctx.closePath();
+          ctx.fillStyle = "#1a5a2a";
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(nx, y + h * 0.28, 4 * scale, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(0,255,100,0.70)";
+          ctx.fill();
+          break;
+        }
+        case 16 /* FUEL_TANK_XXL */: {
+          const frac = part.def.maxFuelMass > 0 ? part.fuelRemaining / part.def.maxFuelMass : 0;
+          const barH = (h - 8 * scale) * frac;
+          ctx.fillStyle = frac > 0.3 ? "rgba(0,180,90,0.30)" : "rgba(255,60,0,0.42)";
+          ctx.fillRect(x + w * 0.2, y + (h - 4 * scale) - barH, w * 0.6, barH);
+          ctx.strokeStyle = "rgba(150,180,200,0.35)";
+          ctx.lineWidth = scale;
+          for (let t = 1; t <= 3; t++) {
+            const ty = y + h * 0.05 + h * 0.9 * (1 - t * 0.25);
+            ctx.beginPath();
+            ctx.moveTo(x + w * 0.2, ty);
+            ctx.lineTo(x + w * 0.35, ty);
+            ctx.stroke();
+          }
+          ctx.fillStyle = "rgba(30,50,70,0.50)";
+          ctx.fillRect(x, y + h * 0.495, w, h * 0.01);
+          break;
+        }
       }
     }
     // ─── Exhaust Plume ────────────────────────────────────────────────────────
@@ -1929,7 +2349,7 @@
      *  25–45 kPa  : stronger streaks + edge lines
      *  45–80 kPa  : haze turns orange, streaks turn orange, sparks appear
      */
-    _drawAscentAero(rocket, scale, frame, totalH, maxW) {
+    _drawAscentAero(_rocket, scale, frame, totalH, maxW) {
       const q = frame.dynamicPressure;
       if (q < _Renderer.Q_STREAK_START)
         return;
@@ -2056,7 +2476,7 @@
      * noseExposure < 0 → nose (local y = -halfH) is windward.
      * noseExposure > 0 → tail (local y = +halfH) is windward.
      */
-    _drawAeroHeating(rocket, scale, frame, totalH, maxW) {
+    _drawAeroHeating(_rocket, scale, frame, totalH, maxW) {
       const ctx = this.ctx;
       const t = this.time;
       const intensity = Math.min(frame.heatFlux / MAX_HEAT_FLUX, 1);
@@ -2693,6 +3113,8 @@
       this.mouseY = 0;
       /** VAB: currently hovered palette part */
       this.hoveredPaletteIdx = -1;
+      /** VAB: palette panel scroll offset in pixels (0 = top) */
+      this._paletteScrollY = 0;
       /** VAB: screen bounds of each rendered rocket part */
       this.vabPartBounds = [];
       // ── VAB ghost / drag state ─────────────────────────────────────────────────
@@ -2800,13 +3222,13 @@
       return false;
     }
     // ─── Options Screen ────────────────────────────────────────────────────────
-    renderOptions(onBack) {
+    renderOptions(advancedDebug, onBack) {
       const ctx = this.ctx;
       const { W, H } = this;
       ctx.fillStyle = THEME.bg;
       ctx.fillRect(0, 0, W, H);
       this._drawMenuStars(0);
-      const pw = 480, ph = 340;
+      const pw = 480, ph = 400;
       const px = (W - pw) / 2, py = (H - ph) / 2;
       ctx.fillStyle = "rgba(10,15,25,0.92)";
       roundRect(ctx, px, py, pw, ph, 10);
@@ -2819,17 +3241,16 @@
       ctx.font = "bold 22px Courier New";
       ctx.textAlign = "center";
       ctx.fillText("OPTIONS", W / 2, py + 40);
-      ctx.fillStyle = THEME.textDim;
       ctx.font = "13px Courier New";
       ctx.textAlign = "left";
-      const options = [
+      const stubs = [
         { label: "Master Volume", value: "100%" },
         { label: "Graphics Quality", value: "High" },
         { label: "Show Trajectory", value: "On" },
         { label: "Physics Steps/s", value: "60" }
       ];
-      options.forEach((opt, i) => {
-        const oy = py + 80 + i * 48;
+      stubs.forEach((opt, i) => {
+        const oy = py + 80 + i * 44;
         ctx.fillStyle = THEME.textDim;
         ctx.fillText(opt.label, px + 30, oy);
         ctx.fillStyle = "rgba(255,255,255,0.06)";
@@ -2846,20 +3267,64 @@
         ctx.textAlign = "left";
         ctx.font = "13px Courier New";
       });
-      ctx.fillStyle = "rgba(100,140,180,0.5)";
+      const toggleY = py + 80 + stubs.length * 44 + 12;
+      ctx.strokeStyle = THEME.panelBorder;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(px + 20, toggleY - 10);
+      ctx.lineTo(px + pw - 20, toggleY - 10);
+      ctx.stroke();
+      ctx.fillStyle = advancedDebug ? THEME.accent : THEME.textDim;
+      ctx.font = "13px Courier New";
+      ctx.textAlign = "left";
+      ctx.fillText("Advanced Debugging", px + 30, toggleY + 6);
+      ctx.font = "11px Courier New";
+      ctx.fillStyle = "rgba(140,180,220,0.6)";
+      ctx.fillText("Show live force vectors on rocket during flight", px + 30, toggleY + 22);
+      const tpx = px + pw - 80, tpy = toggleY - 8, tpw = 60, tph = 26;
+      const on = advancedDebug;
+      ctx.fillStyle = on ? "rgba(0,200,160,0.25)" : "rgba(60,60,80,0.5)";
+      roundRect(ctx, tpx, tpy, tpw, tph, tph / 2);
+      ctx.fill();
+      ctx.strokeStyle = on ? "#00C8A0" : THEME.panelBorder;
+      ctx.lineWidth = 1.5;
+      roundRect(ctx, tpx, tpy, tpw, tph, tph / 2);
+      ctx.stroke();
+      const knobR = tph / 2 - 3;
+      const knobX = on ? tpx + tpw - knobR - 4 : tpx + knobR + 4;
+      ctx.fillStyle = on ? "#00C8A0" : "#606080";
+      ctx.beginPath();
+      ctx.arc(knobX, tpy + tph / 2, knobR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = on ? "#00C8A0" : "#808090";
+      ctx.font = "bold 10px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText(on ? "ON" : "OFF", on ? tpx + 22 : tpx + tpw - 22, tpy + tph / 2 + 4);
+      ctx.fillStyle = "rgba(100,140,180,0.4)";
       ctx.font = "11px Courier New";
       ctx.textAlign = "center";
-      ctx.fillText("(Options are cosmetic stubs \u2014 full settings in a future update)", W / 2, py + ph - 50);
-      const backBtn = { x: W / 2 - 90, y: py + ph - 58, w: 180, h: 36, label: "\u2190 BACK", action: onBack };
+      ctx.fillText("(Stub options are cosmetic \u2014 full settings in a future update)", W / 2, py + ph - 52);
+      const backBtn = { x: W / 2 - 90, y: py + ph - 44, w: 180, h: 36, label: "\u2190 BACK", action: onBack };
       drawButton(ctx, backBtn, isHit(backBtn, this.mouseX, this.mouseY));
     }
-    handleOptionsClick(mx, my, onBack) {
-      const { H } = this;
-      const ph = 340;
-      const py = (H - ph) / 2;
-      const backBtn = { x: this.W / 2 - 90, y: py + ph - 58, w: 180, h: 36, label: "\u2190 BACK", action: onBack };
+    /** Hit-test rect for the Advanced Debug toggle pill */
+    _optionsToggleRect(_ph, pw, py, px) {
+      const stubCount = 4;
+      const toggleY = py + 80 + stubCount * 44 + 12;
+      return { x: px + pw - 80, y: toggleY - 8, w: 60, h: 26 };
+    }
+    handleOptionsClick(mx, my, onBack, onToggleDebug, currentDebug = false) {
+      const { W, H } = this;
+      const pw = 480, ph = 400;
+      const px = (W - pw) / 2, py = (H - ph) / 2;
+      const backBtn = { x: W / 2 - 90, y: py + ph - 44, w: 180, h: 36, label: "\u2190 BACK", action: onBack };
       if (isHit(backBtn, mx, my)) {
         onBack();
+        return true;
+      }
+      const tr = this._optionsToggleRect(ph, pw, py, px);
+      if (mx >= tr.x && mx <= tr.x + tr.w && my >= tr.y && my <= tr.y + tr.h) {
+        onToggleDebug(!currentDebug);
         return true;
       }
       return false;
@@ -2881,46 +3346,74 @@
       ctx.font = "bold 13px Courier New";
       ctx.textAlign = "center";
       ctx.fillText("PARTS", this.VAB_PALETTE_W / 2, 28);
-      const cardH = Math.min(62, (H - 60) / VAB_PALETTE.length);
+      const CARD_H = 62;
+      const CARD_GAP = 4;
+      const PALETTE_HEADER = 40;
+      const PALETTE_FOOTER = 28;
+      const listTop = PALETTE_HEADER;
+      const listBottom = H - PALETTE_FOOTER;
+      const listH = listBottom - listTop;
+      const totalContentH = VAB_PALETTE.length * (CARD_H + CARD_GAP);
+      const maxScroll = Math.max(0, totalContentH - listH);
+      this._paletteScrollY = Math.max(0, Math.min(maxScroll, this._paletteScrollY));
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, listTop, this.VAB_PALETTE_W, listH);
+      ctx.clip();
       VAB_PALETTE.forEach((type, i) => {
         const def = PART_CATALOGUE[type];
-        const cy = 42 + i * (cardH + 4);
+        const cy = listTop + i * (CARD_H + CARD_GAP) - this._paletteScrollY;
+        if (cy + CARD_H < listTop || cy > listBottom)
+          return;
         const hovered = this.hoveredPaletteIdx === i;
         const isGhost = this.vabGhostType === type;
         ctx.fillStyle = isGhost ? "rgba(0,180,220,0.30)" : hovered ? "rgba(0,120,160,0.35)" : "rgba(15,25,40,0.8)";
-        roundRect(ctx, 8, cy, this.VAB_PALETTE_W - 16, cardH, 5);
+        roundRect(ctx, 8, cy, this.VAB_PALETTE_W - 16, CARD_H, 5);
         ctx.fill();
         ctx.strokeStyle = isGhost ? THEME.accent : hovered ? THEME.accent : THEME.panelBorder;
         ctx.lineWidth = isGhost ? 1.5 : 1;
-        roundRect(ctx, 8, cy, this.VAB_PALETTE_W - 16, cardH, 5);
+        roundRect(ctx, 8, cy, this.VAB_PALETTE_W - 16, CARD_H, 5);
         ctx.stroke();
-        const swH = Math.min(42, cardH - 8);
+        const swH = Math.min(42, CARD_H - 8);
         ctx.fillStyle = def.color;
-        roundRect(ctx, 14, cy + (cardH - swH) / 2, 20, swH, 3);
+        roundRect(ctx, 14, cy + (CARD_H - swH) / 2, 20, swH, 3);
         ctx.fill();
         ctx.fillStyle = hovered || isGhost ? THEME.accent : THEME.text;
         ctx.font = "10px Courier New";
         ctx.textAlign = "left";
-        ctx.fillText(def.name.length > 16 ? def.name.slice(0, 16) + "\u2026" : def.name, 40, cy + cardH * 0.38);
+        ctx.fillText(def.name.length > 16 ? def.name.slice(0, 16) + "\u2026" : def.name, 40, cy + CARD_H * 0.38);
         ctx.fillStyle = THEME.textDim;
         ctx.font = "9px Courier New";
-        ctx.fillText(`${(def.dryMass / 1e3).toFixed(1)}t`, 40, cy + cardH * 0.6);
+        ctx.fillText(`${(def.dryMass / 1e3).toFixed(1)}t`, 40, cy + CARD_H * 0.6);
         if (def.maxThrust > 0)
-          ctx.fillText(`${(def.maxThrust / 1e3).toFixed(0)}kN`, 76, cy + cardH * 0.6);
+          ctx.fillText(`${(def.maxThrust / 1e3).toFixed(0)}kN`, 76, cy + CARD_H * 0.6);
         if (def.maxFuelMass > 0)
-          ctx.fillText(`\u26FD${(def.maxFuelMass / 1e3).toFixed(1)}t`, 40, cy + cardH * 0.8);
+          ctx.fillText(`\u26FD${(def.maxFuelMass / 1e3).toFixed(1)}t`, 40, cy + CARD_H * 0.8);
         if (def.ignoreThrottle) {
           ctx.fillStyle = "#cc8822";
-          ctx.fillText("SOLID", 76, cy + cardH * 0.8);
+          ctx.fillText("SOLID", 76, cy + CARD_H * 0.8);
         }
       });
+      ctx.restore();
+      if (maxScroll > 0) {
+        const sbW = 4;
+        const sbX = this.VAB_PALETTE_W - sbW - 3;
+        const trackH = listH;
+        const thumbH = Math.max(20, trackH * listH / totalContentH);
+        const thumbY = listTop + this._paletteScrollY / maxScroll * (trackH - thumbH);
+        ctx.fillStyle = "rgba(0,120,160,0.30)";
+        ctx.fillRect(sbX, listTop, sbW, trackH);
+        ctx.fillStyle = "rgba(0,180,220,0.65)";
+        roundRect(ctx, sbX, thumbY, sbW, thumbH, 2);
+        ctx.fill();
+      }
       ctx.fillStyle = this.vabGhostType !== null ? THEME.accent : THEME.textDim;
       ctx.font = "9px Courier New";
       ctx.textAlign = "center";
       ctx.fillText(
-        this.vabGhostType !== null ? "Click build area to place" : "Click to grab a part",
+        this.vabGhostType !== null ? "Click to place" : maxScroll > 0 ? "\u25B2\u25BC scroll  \u2022  click to grab" : "Click to grab a part",
         this.VAB_PALETTE_W / 2,
-        H - 16
+        H - 10
       );
       const buildX = this.VAB_PALETTE_W;
       const buildW = W - buildX - 196;
@@ -3054,29 +3547,23 @@
           return true;
         }
         if (mx < this.VAB_PALETTE_W) {
-          const cardH = Math.min(62, (H - 60) / VAB_PALETTE.length);
-          VAB_PALETTE.forEach((type, i) => {
-            const cy = 42 + i * (cardH + 4);
-            if (my >= cy && my <= cy + cardH) {
-              this.vabGhostType = type;
-              this.vabGhostStageIndex = -1;
-            }
-          });
+          const i = this._paletteIdxAt(mx, my);
+          if (i >= 0) {
+            this.vabGhostType = VAB_PALETTE[i];
+            this.vabGhostStageIndex = -1;
+          }
           return true;
         }
         return false;
       }
       if (mx < this.VAB_PALETTE_W) {
-        const cardH = Math.min(62, (H - 60) / VAB_PALETTE.length);
-        VAB_PALETTE.forEach((type, i) => {
-          const cy = 42 + i * (cardH + 4);
-          if (my >= cy && my <= cy + cardH) {
-            this.vabGhostType = type;
-            this.vabGhostStageIndex = -1;
-            this.vabSnapSlot = rocket.parts.length;
-            this.vabSnapLineY = this.vabGapYs[rocket.parts.length] ?? this.vabBottomY;
-          }
-        });
+        const i = this._paletteIdxAt(mx, my);
+        if (i >= 0) {
+          this.vabGhostType = VAB_PALETTE[i];
+          this.vabGhostStageIndex = -1;
+          this.vabSnapSlot = rocket.parts.length;
+          this.vabSnapLineY = this.vabGapYs[rocket.parts.length] ?? this.vabBottomY;
+        }
         return true;
       }
       if (mx >= this.vabBuildX && mx < infoX) {
@@ -3112,18 +3599,27 @@
         }
       }
     }
+    /** Returns the palette card index under (mx, my), accounting for scroll, or -1. */
+    _paletteIdxAt(mx, my) {
+      if (mx >= this.VAB_PALETTE_W)
+        return -1;
+      const CARD_H = 62, CARD_GAP = 4, HEADER = 40, FOOTER = 28;
+      const listTop = HEADER;
+      const listBottom = this.H - FOOTER;
+      if (my < listTop || my > listBottom)
+        return -1;
+      const scrolled = my - listTop + this._paletteScrollY;
+      const i = Math.floor(scrolled / (CARD_H + CARD_GAP));
+      if (i < 0 || i >= VAB_PALETTE.length)
+        return -1;
+      if (scrolled % (CARD_H + CARD_GAP) > CARD_H)
+        return -1;
+      return i;
+    }
     handleVABMouseMove(mx, my) {
       this.mouseX = mx;
       this.mouseY = my;
-      const cardH = Math.min(62, (this.H - 60) / VAB_PALETTE.length);
-      this.hoveredPaletteIdx = -1;
-      if (mx < this.VAB_PALETTE_W) {
-        VAB_PALETTE.forEach((_, i) => {
-          const cy = 42 + i * (cardH + 4);
-          if (my >= cy && my <= cy + cardH)
-            this.hoveredPaletteIdx = i;
-        });
-      }
+      this.hoveredPaletteIdx = this._paletteIdxAt(mx, my);
       if (this.vabGhostType !== null && this.vabGapYs.length > 0) {
         let bestSlot = 0;
         let bestDist = Infinity;
@@ -3137,6 +3633,16 @@
         this.vabSnapSlot = bestSlot;
         this.vabSnapLineY = this.vabGapYs[bestSlot];
       }
+    }
+    /** Scroll the VAB palette panel with the mouse wheel. */
+    handleVABScroll(mx, _my, deltaY) {
+      if (mx >= this.VAB_PALETTE_W)
+        return;
+      const CARD_H = 62, CARD_GAP = 4, HEADER = 40, FOOTER = 28;
+      const listH = this.H - HEADER - FOOTER;
+      const totalContentH = VAB_PALETTE.length * (CARD_H + CARD_GAP);
+      const maxScroll = Math.max(0, totalContentH - listH);
+      this._paletteScrollY = Math.max(0, Math.min(maxScroll, this._paletteScrollY + deltaY * 0.6));
     }
     // ─── Staging Screen ────────────────────────────────────────────────────────
     renderStaging(rocket, onConfirm, onBack) {
@@ -3493,7 +3999,7 @@
       }
       this._drawRocketMarker(rocket, wallTime);
       if (this.node)
-        this._drawManeuverNode(missionTime);
+        this._drawManeuverNode(missionTime, rocket);
       this._drawOrbitalInfo(rocket, missionTime);
       if (!this._encounter && !this._postNodeEncounter) {
         this._drawTransferHints(rocket, missionTime);
@@ -3816,7 +4322,16 @@
     }
     handleWheel(e) {
       const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+      const rect = e.target.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      const eMppBefore = this.eMpp;
+      const worldX = (mx - this.W / 2 - this.panX) * eMppBefore;
+      const worldY = -(my - this.H / 2 - this.panY) * eMppBefore;
       this.userScale = Math.max(5e-3, Math.min(80, this.userScale * factor));
+      const eMppAfter = this.eMpp;
+      this.panX = mx - this.W / 2 - worldX / eMppAfter;
+      this.panY = my - this.H / 2 + worldY / eMppAfter;
     }
     resetView() {
       this.panX = 0;
@@ -4235,7 +4750,7 @@
       });
     }
     // ─── Maneuver Node Marker + Handles ──────────────────────────────────────
-    _drawManeuverNode(missionTime) {
+    _drawManeuverNode(missionTime, rocket) {
       if (!this.node)
         return;
       const base = this.cachedPath[this._nodeIdx];
@@ -4321,20 +4836,24 @@
       ctx.fillText("\u0394", sp.x, sp.y);
       ctx.textBaseline = "alphabetic";
       ctx.restore();
-      this._drawNodeInfoPanel(missionTime, sp);
+      this._drawNodeInfoPanel(missionTime, sp, rocket);
     }
-    _drawNodeInfoPanel(missionTime, nodeSP) {
+    _drawNodeInfoPanel(missionTime, nodeSP, rocket) {
       const ctx = this.ctx;
       const node = this.node;
       const totalDV = Math.hypot(node.progradeDV, node.normalDV);
       const timeToNode = node.time - missionTime;
-      const pw = 210, ph = 100;
+      const est = rocket.getBurnEstimate(totalDV);
+      const halfBurn = isFinite(est.burnTime) ? est.burnTime / 2 : 0;
+      const timeIgnit = timeToNode - halfBurn;
+      const dvShort = est.hasEngines && totalDV > est.dvAvailable + 0.5;
+      const pw = 220, ph = 168;
       const px = nodeSP.x + 20 + pw < this.W ? nodeSP.x + 20 : nodeSP.x - pw - 20;
       const py = Math.max(10, Math.min(this.H - ph - 10, nodeSP.y - ph / 2));
       ctx.fillStyle = "rgba(8,14,24,0.92)";
       this._roundRect(px, py, pw, ph, 6);
       ctx.fill();
-      ctx.strokeStyle = THEME.warning;
+      ctx.strokeStyle = dvShort ? THEME.danger : THEME.warning;
       ctx.lineWidth = 1;
       this._roundRect(px, py, pw, ph, 6);
       ctx.stroke();
@@ -4342,22 +4861,54 @@
       ctx.font = "bold 11px Courier New";
       ctx.textAlign = "center";
       ctx.fillText("MANEUVER NODE", px + pw / 2, py + 16);
+      const fmtBurn = (s) => {
+        if (!isFinite(s) || s > 99999)
+          return "---";
+        if (s < 60)
+          return `${s.toFixed(1)} s`;
+        return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
+      };
       const rows = [
-        ["\u0394V", `${totalDV.toFixed(1)} m/s`],
-        ["PRO", `${node.progradeDV.toFixed(1)} m/s`],
-        ["RAD", `${node.normalDV.toFixed(1)} m/s`],
-        ["T\u2212", timeToNode < 0 ? "PAST NODE" : this._fmtTime(timeToNode)]
+        ["\u0394V", `${totalDV.toFixed(1)} m/s`, dvShort ? "danger" : "accent"],
+        ["PRO", `${node.progradeDV.toFixed(1)} m/s`, null],
+        ["RAD", `${node.normalDV.toFixed(1)} m/s`, null],
+        [
+          "T\u2212",
+          timeToNode < 0 ? "PAST NODE" : this._fmtTime(timeToNode),
+          timeToNode >= 0 && timeToNode < 60 ? "danger" : null
+        ],
+        [
+          "BURN",
+          est.hasEngines ? fmtBurn(est.burnTime) : "no engine",
+          est.hasEngines ? null : "danger"
+        ],
+        [
+          "IGNIT",
+          timeToNode < 0 ? "NOW" : timeIgnit < 0 ? "BURN NOW" : this._fmtTime(timeIgnit),
+          timeIgnit < 30 && timeToNode >= 0 ? "danger" : null
+        ],
+        [
+          "AVAIL",
+          est.hasEngines ? `${est.dvAvailable.toFixed(0)} m/s` : "---",
+          dvShort ? "danger" : "success"
+        ]
       ];
-      rows.forEach(([k, v], i) => {
+      rows.forEach(([k, v, style], i) => {
         const ry = py + 32 + i * 18;
         ctx.fillStyle = THEME.textDim;
         ctx.font = "10px Courier New";
         ctx.textAlign = "left";
         ctx.fillText(k, px + 10, ry);
-        ctx.fillStyle = k === "T\u2212" && timeToNode < 60 ? THEME.danger : k === "\u0394V" ? THEME.accent : THEME.text;
+        ctx.fillStyle = style === "danger" ? THEME.danger : style === "success" ? THEME.success : style === "accent" ? THEME.accent : THEME.text;
         ctx.textAlign = "right";
         ctx.fillText(v, px + pw - 10, ry);
       });
+      if (dvShort) {
+        ctx.fillStyle = THEME.danger;
+        ctx.font = "bold 9px Courier New";
+        ctx.textAlign = "center";
+        ctx.fillText("\u26A0 INSUFFICIENT \u0394V", px + pw / 2, py + ph - 18);
+      }
       ctx.fillStyle = THEME.textDim;
       ctx.font = "9px Courier New";
       ctx.textAlign = "center";
@@ -4601,6 +5152,8 @@
       this.lastTime = -1;
       /** Total wall-clock time (for animations) */
       this.wallTime = 0;
+      /** Show force-vector debug overlay during flight */
+      this.advancedDebug = false;
       /** Input state flags */
       this.input = {
         throttleUp: false,
@@ -4697,7 +5250,7 @@
       );
     }
     _updateOptions() {
-      this.ui.renderOptions(() => this._switchTo(0 /* MAIN_MENU */));
+      this.ui.renderOptions(this.advancedDebug, () => this._switchTo(0 /* MAIN_MENU */));
     }
     _updateVAB() {
       this.ui.renderVAB(
@@ -4719,14 +5272,13 @@
       const warpFactor = this.WARP_LEVELS[this.warpIndex];
       const highWarp = warpFactor >= 100;
       if (highWarp) {
-        const bigDt = warpFactor / 60;
         this.rocket.throttle = 0;
         this.throttle = 0;
         this.rocket.body.mass = this.rocket.getTotalMass();
-        this.physics.step(this.rocket.body, this.rocket, bigDt);
+        this.physics.stepWarp(this.rocket.body, warpFactor / 60);
         if (!isFinite(this.rocket.body.pos.x) || !isFinite(this.rocket.body.pos.y)) {
-          this.rocket.body.pos.x = isFinite(this.rocket.body.pos.x) ? this.rocket.body.pos.x : 0;
-          this.rocket.body.pos.y = isFinite(this.rocket.body.pos.y) ? this.rocket.body.pos.y : 6371001;
+          this.rocket.body.pos.x = 0;
+          this.rocket.body.pos.y = R_EARTH + 1;
           this.rocket.body.vel.x = 0;
           this.rocket.body.vel.y = 0;
           this.warpIndex = 0;
@@ -4757,12 +5309,12 @@
       this._checkFlightEvents();
       const frame = this.physics.lastFrame;
       if (this.isMapOpen) {
-        this.renderer.renderFlight(this.rocket, frame, this.throttle, this.physics.missionTime);
+        this.renderer.renderFlight(this.rocket, frame, this.throttle, this.physics.missionTime, this.advancedDebug);
         this.mapView.render(this.rocket, this.wallTime, this.physics.missionTime, () => {
           this.isMapOpen = false;
         });
       } else {
-        this.renderer.renderFlight(this.rocket, frame, this.throttle, this.physics.missionTime);
+        this.renderer.renderFlight(this.rocket, frame, this.throttle, this.physics.missionTime, this.advancedDebug);
         this.renderer.renderHUD(
           this.rocket,
           frame,
@@ -5069,6 +5621,9 @@
         if (this.isMapOpen) {
           e.preventDefault();
           this.mapView.handleWheel(e);
+        } else if (this.screen === 2 /* VAB */) {
+          e.preventDefault();
+          this.ui.handleVABScroll(e.clientX, e.clientY, e.deltaY);
         }
       }, { passive: false });
       this.canvas.addEventListener("click", (e) => {
@@ -5097,7 +5652,9 @@
             );
             break;
           case 1 /* OPTIONS */:
-            this.ui.handleOptionsClick(mx, my, () => this._switchTo(0 /* MAIN_MENU */));
+            this.ui.handleOptionsClick(mx, my, () => this._switchTo(0 /* MAIN_MENU */), (v) => {
+              this.advancedDebug = v;
+            }, this.advancedDebug);
             break;
           case 2 /* VAB */:
             this.ui.handleVABClick(

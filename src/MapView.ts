@@ -231,7 +231,7 @@ export class MapView {
     }
 
     this._drawRocketMarker(rocket, wallTime);
-    if (this.node) this._drawManeuverNode(missionTime);
+    if (this.node) this._drawManeuverNode(missionTime, rocket);
 
     // Orbital info — switches to lunar elements inside Moon SOI
     this._drawOrbitalInfo(rocket, missionTime);
@@ -575,7 +575,23 @@ export class MapView {
 
   handleWheel(e: WheelEvent): void {
     const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+
+    // Mouse position in canvas space
+    const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    // World point currently under the mouse — capture BEFORE zoom changes eMpp
+    const eMppBefore = this.eMpp;
+    const worldX =  (mx - this.W / 2 - this.panX) * eMppBefore;
+    const worldY = -(my - this.H / 2 - this.panY) * eMppBefore;
+
     this.userScale = Math.max(0.005, Math.min(80, this.userScale * factor));
+
+    // Re-pin that world point under the mouse with the new eMpp
+    const eMppAfter = this.eMpp;
+    this.panX = mx - this.W / 2 - worldX / eMppAfter;
+    this.panY = my - this.H / 2 + worldY / eMppAfter;
   }
 
   resetView(): void {
@@ -1043,7 +1059,7 @@ export class MapView {
 
   // ─── Maneuver Node Marker + Handles ──────────────────────────────────────
 
-  private _drawManeuverNode(missionTime: number): void {
+  private _drawManeuverNode(missionTime: number, rocket: Rocket): void {
     if (!this.node) return;
 
     const base = this.cachedPath[this._nodeIdx];
@@ -1120,46 +1136,71 @@ export class MapView {
 
     ctx.restore();
 
-    this._drawNodeInfoPanel(missionTime, sp);
+    this._drawNodeInfoPanel(missionTime, sp, rocket);
   }
 
-  private _drawNodeInfoPanel(missionTime: number, nodeSP: Vec2): void {
+  private _drawNodeInfoPanel(missionTime: number, nodeSP: Vec2, rocket: Rocket): void {
     const ctx  = this.ctx;
     const node = this.node!;
 
     const totalDV    = Math.hypot(node.progradeDV, node.normalDV);
     const timeToNode = node.time - missionTime;
 
-    const pw = 210, ph = 100;
+    const est        = rocket.getBurnEstimate(totalDV);
+    const halfBurn   = isFinite(est.burnTime) ? est.burnTime / 2 : 0;
+    const timeIgnit  = timeToNode - halfBurn;   // T- to ignition (centered burn)
+    const dvShort    = est.hasEngines && totalDV > est.dvAvailable + 0.5;
+
+    const pw = 220, ph = 168;
     const px = (nodeSP.x + 20 + pw < this.W) ? nodeSP.x + 20 : nodeSP.x - pw - 20;
     const py = Math.max(10, Math.min(this.H - ph - 10, nodeSP.y - ph / 2));
 
     ctx.fillStyle = 'rgba(8,14,24,0.92)';
     this._roundRect(px, py, pw, ph, 6); ctx.fill();
-    ctx.strokeStyle = THEME.warning; ctx.lineWidth = 1;
+    ctx.strokeStyle = dvShort ? THEME.danger : THEME.warning; ctx.lineWidth = 1;
     this._roundRect(px, py, pw, ph, 6); ctx.stroke();
 
     ctx.fillStyle = THEME.warning; ctx.font = 'bold 11px Courier New';
     ctx.textAlign = 'center';
     ctx.fillText('MANEUVER NODE', px + pw / 2, py + 16);
 
-    const rows: [string, string][] = [
-      ['ΔV',  `${totalDV.toFixed(1)} m/s`],
-      ['PRO', `${node.progradeDV.toFixed(1)} m/s`],
-      ['RAD', `${node.normalDV.toFixed(1)} m/s`],
-      ['T−',  timeToNode < 0 ? 'PAST NODE' : this._fmtTime(timeToNode)],
+    // Helper to format burn time (seconds → m:ss or s)
+    const fmtBurn = (s: number): string => {
+      if (!isFinite(s) || s > 99999) return '---';
+      if (s < 60) return `${s.toFixed(1)} s`;
+      return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
+    };
+
+    const rows: Array<[string, string, string | null]> = [
+      ['ΔV',    `${totalDV.toFixed(1)} m/s`,               dvShort ? 'danger' : 'accent'],
+      ['PRO',   `${node.progradeDV.toFixed(1)} m/s`,        null],
+      ['RAD',   `${node.normalDV.toFixed(1)} m/s`,          null],
+      ['T−',    timeToNode < 0 ? 'PAST NODE' : this._fmtTime(timeToNode),
+                                                             timeToNode >= 0 && timeToNode < 60 ? 'danger' : null],
+      ['BURN',  est.hasEngines ? fmtBurn(est.burnTime) : 'no engine',
+                                                             est.hasEngines ? null : 'danger'],
+      ['IGNIT', timeToNode < 0 ? 'NOW' : timeIgnit < 0 ? 'BURN NOW' : this._fmtTime(timeIgnit),
+                                                             timeIgnit < 30 && timeToNode >= 0 ? 'danger' : null],
+      ['AVAIL', est.hasEngines ? `${est.dvAvailable.toFixed(0)} m/s` : '---',
+                                                             dvShort ? 'danger' : 'success'],
     ];
 
-    rows.forEach(([k, v], i) => {
+    rows.forEach(([k, v, style], i) => {
       const ry = py + 32 + i * 18;
       ctx.fillStyle = THEME.textDim; ctx.font = '10px Courier New'; ctx.textAlign = 'left';
       ctx.fillText(k, px + 10, ry);
-      ctx.fillStyle = (k === 'T−' && timeToNode < 60) ? THEME.danger
-                    : (k === 'ΔV') ? THEME.accent : THEME.text;
+      ctx.fillStyle = style === 'danger'  ? THEME.danger
+                    : style === 'success' ? THEME.success
+                    : style === 'accent'  ? THEME.accent
+                    : THEME.text;
       ctx.textAlign = 'right';
       ctx.fillText(v, px + pw - 10, ry);
     });
 
+    if (dvShort) {
+      ctx.fillStyle = THEME.danger; ctx.font = 'bold 9px Courier New'; ctx.textAlign = 'center';
+      ctx.fillText('⚠ INSUFFICIENT ΔV', px + pw / 2, py + ph - 18);
+    }
     ctx.fillStyle = THEME.textDim; ctx.font = '9px Courier New'; ctx.textAlign = 'center';
     ctx.fillText('[click node to delete]', px + pw / 2, py + ph - 6);
   }

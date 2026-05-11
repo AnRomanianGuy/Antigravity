@@ -105,6 +105,9 @@ export class UI {
   /** VAB: currently hovered palette part */
   private hoveredPaletteIdx = -1;
 
+  /** VAB: palette panel scroll offset in pixels (0 = top) */
+  private _paletteScrollY = 0;
+
   /** VAB: screen bounds of each rendered rocket part */
   private vabPartBounds: Array<{id: string, x: number, y: number, w: number, h: number}> = [];
 
@@ -238,7 +241,7 @@ export class UI {
 
   // ─── Options Screen ────────────────────────────────────────────────────────
 
-  renderOptions(onBack: () => void): void {
+  renderOptions(advancedDebug: boolean, onBack: () => void): void {
     const ctx = this.ctx;
     const { W, H } = this;
 
@@ -247,7 +250,7 @@ export class UI {
     this._drawMenuStars(0);
 
     // Panel
-    const pw = 480, ph = 340;
+    const pw = 480, ph = 400;
     const px = (W - pw) / 2, py = (H - ph) / 2;
     ctx.fillStyle = 'rgba(10,15,25,0.92)';
     roundRect(ctx, px, py, pw, ph, 10);
@@ -262,23 +265,20 @@ export class UI {
     ctx.textAlign = 'center';
     ctx.fillText('OPTIONS', W / 2, py + 40);
 
-    ctx.fillStyle = THEME.textDim;
     ctx.font = '13px Courier New';
     ctx.textAlign = 'left';
 
-    const options = [
+    // ── Stub options ──────────────────────────────────────────────────────────
+    const stubs = [
       { label: 'Master Volume',    value: '100%' },
       { label: 'Graphics Quality', value: 'High'  },
       { label: 'Show Trajectory',  value: 'On'    },
       { label: 'Physics Steps/s',  value: '60'    },
     ];
-
-    options.forEach((opt, i) => {
-      const oy = py + 80 + i * 48;
+    stubs.forEach((opt, i) => {
+      const oy = py + 80 + i * 44;
       ctx.fillStyle = THEME.textDim;
       ctx.fillText(opt.label, px + 30, oy);
-
-      // Fake slider track
       ctx.fillStyle = 'rgba(255,255,255,0.06)';
       roundRect(ctx, px + 220, oy - 14, 180, 20, 4);
       ctx.fill();
@@ -286,7 +286,6 @@ export class UI {
       ctx.lineWidth = 1;
       roundRect(ctx, px + 220, oy - 14, 180, 20, 4);
       ctx.stroke();
-
       ctx.fillStyle = THEME.accent;
       ctx.font = '12px Courier New';
       ctx.textAlign = 'right';
@@ -295,22 +294,82 @@ export class UI {
       ctx.font = '13px Courier New';
     });
 
-    ctx.fillStyle = 'rgba(100,140,180,0.5)';
+    // ── Advanced Debugging toggle (functional) ────────────────────────────────
+    const toggleY = py + 80 + stubs.length * 44 + 12;
+
+    // Separator line
+    ctx.strokeStyle = THEME.panelBorder;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(px + 20, toggleY - 10);
+    ctx.lineTo(px + pw - 20, toggleY - 10);
+    ctx.stroke();
+
+    ctx.fillStyle = advancedDebug ? THEME.accent : THEME.textDim;
+    ctx.font = '13px Courier New';
+    ctx.textAlign = 'left';
+    ctx.fillText('Advanced Debugging', px + 30, toggleY + 6);
+
+    ctx.font = '11px Courier New';
+    ctx.fillStyle = 'rgba(140,180,220,0.6)';
+    ctx.fillText('Show live force vectors on rocket during flight', px + 30, toggleY + 22);
+
+    // Toggle pill
+    const tpx = px + pw - 80, tpy = toggleY - 8, tpw = 60, tph = 26;
+    const on = advancedDebug;
+    ctx.fillStyle = on ? 'rgba(0,200,160,0.25)' : 'rgba(60,60,80,0.5)';
+    roundRect(ctx, tpx, tpy, tpw, tph, tph / 2);
+    ctx.fill();
+    ctx.strokeStyle = on ? '#00C8A0' : THEME.panelBorder;
+    ctx.lineWidth = 1.5;
+    roundRect(ctx, tpx, tpy, tpw, tph, tph / 2);
+    ctx.stroke();
+
+    // Pill knob
+    const knobR = tph / 2 - 3;
+    const knobX = on ? tpx + tpw - knobR - 4 : tpx + knobR + 4;
+    ctx.fillStyle = on ? '#00C8A0' : '#606080';
+    ctx.beginPath();
+    ctx.arc(knobX, tpy + tph / 2, knobR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Label inside pill
+    ctx.fillStyle = on ? '#00C8A0' : '#808090';
+    ctx.font = 'bold 10px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText(on ? 'ON' : 'OFF', on ? tpx + 22 : tpx + tpw - 22, tpy + tph / 2 + 4);
+
+    ctx.fillStyle = 'rgba(100,140,180,0.4)';
     ctx.font = '11px Courier New';
     ctx.textAlign = 'center';
-    ctx.fillText('(Options are cosmetic stubs — full settings in a future update)', W / 2, py + ph - 50);
+    ctx.fillText('(Stub options are cosmetic — full settings in a future update)', W / 2, py + ph - 52);
 
     // Back button
-    const backBtn: Button = { x: W / 2 - 90, y: py + ph - 58, w: 180, h: 36, label: '← BACK', action: onBack };
+    const backBtn: Button = { x: W / 2 - 90, y: py + ph - 44, w: 180, h: 36, label: '← BACK', action: onBack };
     drawButton(ctx, backBtn, isHit(backBtn, this.mouseX, this.mouseY));
   }
 
-  handleOptionsClick(mx: number, my: number, onBack: () => void): boolean {
-    const { H } = this;
-    const ph = 340;
-    const py = (H - ph) / 2;
-    const backBtn: Button = { x: this.W / 2 - 90, y: py + ph - 58, w: 180, h: 36, label: '← BACK', action: onBack };
+  /** Hit-test rect for the Advanced Debug toggle pill */
+  private _optionsToggleRect(_ph: number, pw: number, py: number, px: number) {
+    const stubCount = 4;
+    const toggleY = py + 80 + stubCount * 44 + 12;
+    return { x: px + pw - 80, y: toggleY - 8, w: 60, h: 26 };
+  }
+
+  handleOptionsClick(mx: number, my: number, onBack: () => void, onToggleDebug: (v: boolean) => void, currentDebug = false): boolean {
+    const { W, H } = this;
+    const pw = 480, ph = 400;
+    const px = (W - pw) / 2, py = (H - ph) / 2;
+
+    const backBtn: Button = { x: W / 2 - 90, y: py + ph - 44, w: 180, h: 36, label: '← BACK', action: onBack };
     if (isHit(backBtn, mx, my)) { onBack(); return true; }
+
+    // Toggle pill click
+    const tr = this._optionsToggleRect(ph, pw, py, px);
+    if (mx >= tr.x && mx <= tr.x + tr.w && my >= tr.y && my <= tr.y + tr.h) {
+      onToggleDebug(!currentDebug);
+      return true;
+    }
     return false;
   }
 
@@ -342,49 +401,85 @@ export class UI {
     ctx.textAlign = 'center';
     ctx.fillText('PARTS', this.VAB_PALETTE_W / 2, 28);
 
-    const cardH = Math.min(62, (H - 60) / VAB_PALETTE.length);
+    // Fixed card size — palette scrolls instead of squishing
+    const CARD_H   = 62;
+    const CARD_GAP = 4;
+    const PALETTE_HEADER = 40;
+    const PALETTE_FOOTER = 28;
+    const listTop    = PALETTE_HEADER;
+    const listBottom = H - PALETTE_FOOTER;
+    const listH      = listBottom - listTop;
+    const totalContentH = VAB_PALETTE.length * (CARD_H + CARD_GAP);
+
+    // Clamp scroll
+    const maxScroll = Math.max(0, totalContentH - listH);
+    this._paletteScrollY = Math.max(0, Math.min(maxScroll, this._paletteScrollY));
+
+    // Clip to scrollable area so cards don't bleed into the header/footer
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, listTop, this.VAB_PALETTE_W, listH);
+    ctx.clip();
+
     VAB_PALETTE.forEach((type, i) => {
       const def = PART_CATALOGUE[type];
-      const cy = 42 + i * (cardH + 4);
+      const cy = listTop + i * (CARD_H + CARD_GAP) - this._paletteScrollY;
+      if (cy + CARD_H < listTop || cy > listBottom) return; // outside viewport
       const hovered = this.hoveredPaletteIdx === i;
       const isGhost = this.vabGhostType === type;
 
       ctx.fillStyle = isGhost ? 'rgba(0,180,220,0.30)' : hovered ? 'rgba(0,120,160,0.35)' : 'rgba(15,25,40,0.8)';
-      roundRect(ctx, 8, cy, this.VAB_PALETTE_W - 16, cardH, 5);
+      roundRect(ctx, 8, cy, this.VAB_PALETTE_W - 16, CARD_H, 5);
       ctx.fill();
       ctx.strokeStyle = isGhost ? THEME.accent : hovered ? THEME.accent : THEME.panelBorder;
       ctx.lineWidth = isGhost ? 1.5 : 1;
-      roundRect(ctx, 8, cy, this.VAB_PALETTE_W - 16, cardH, 5);
+      roundRect(ctx, 8, cy, this.VAB_PALETTE_W - 16, CARD_H, 5);
       ctx.stroke();
 
-      const swH = Math.min(42, cardH - 8);
+      const swH = Math.min(42, CARD_H - 8);
       ctx.fillStyle = def.color;
-      roundRect(ctx, 14, cy + (cardH - swH) / 2, 20, swH, 3);
+      roundRect(ctx, 14, cy + (CARD_H - swH) / 2, 20, swH, 3);
       ctx.fill();
 
       ctx.fillStyle = hovered || isGhost ? THEME.accent : THEME.text;
       ctx.font = '10px Courier New';
       ctx.textAlign = 'left';
-      ctx.fillText(def.name.length > 16 ? def.name.slice(0, 16) + '…' : def.name, 40, cy + cardH * 0.38);
+      ctx.fillText(def.name.length > 16 ? def.name.slice(0, 16) + '…' : def.name, 40, cy + CARD_H * 0.38);
 
       ctx.fillStyle = THEME.textDim;
       ctx.font = '9px Courier New';
-      ctx.fillText(`${(def.dryMass / 1000).toFixed(1)}t`, 40, cy + cardH * 0.60);
-      if (def.maxThrust > 0) ctx.fillText(`${(def.maxThrust / 1000).toFixed(0)}kN`, 76, cy + cardH * 0.60);
-      if (def.maxFuelMass > 0) ctx.fillText(`⛽${(def.maxFuelMass / 1000).toFixed(1)}t`, 40, cy + cardH * 0.80);
+      ctx.fillText(`${(def.dryMass / 1000).toFixed(1)}t`, 40, cy + CARD_H * 0.60);
+      if (def.maxThrust > 0) ctx.fillText(`${(def.maxThrust / 1000).toFixed(0)}kN`, 76, cy + CARD_H * 0.60);
+      if (def.maxFuelMass > 0) ctx.fillText(`⛽${(def.maxFuelMass / 1000).toFixed(1)}t`, 40, cy + CARD_H * 0.80);
       if (def.ignoreThrottle) {
         ctx.fillStyle = '#cc8822';
-        ctx.fillText('SOLID', 76, cy + cardH * 0.80);
+        ctx.fillText('SOLID', 76, cy + CARD_H * 0.80);
       }
     });
 
-    // Palette hint
+    ctx.restore();
+
+    // Scrollbar (only when content overflows)
+    if (maxScroll > 0) {
+      const sbW  = 4;
+      const sbX  = this.VAB_PALETTE_W - sbW - 3;
+      const trackH = listH;
+      const thumbH = Math.max(20, trackH * listH / totalContentH);
+      const thumbY = listTop + (this._paletteScrollY / maxScroll) * (trackH - thumbH);
+      ctx.fillStyle = 'rgba(0,120,160,0.30)';
+      ctx.fillRect(sbX, listTop, sbW, trackH);
+      ctx.fillStyle = 'rgba(0,180,220,0.65)';
+      roundRect(ctx, sbX, thumbY, sbW, thumbH, 2);
+      ctx.fill();
+    }
+
+    // Palette hint (bottom strip, always visible)
     ctx.fillStyle = this.vabGhostType !== null ? THEME.accent : THEME.textDim;
     ctx.font = '9px Courier New';
     ctx.textAlign = 'center';
     ctx.fillText(
-      this.vabGhostType !== null ? 'Click build area to place' : 'Click to grab a part',
-      this.VAB_PALETTE_W / 2, H - 16,
+      this.vabGhostType !== null ? 'Click to place' : maxScroll > 0 ? '▲▼ scroll  •  click to grab' : 'Click to grab a part',
+      this.VAB_PALETTE_W / 2, H - 10,
     );
 
     // ── Build area ─────────────────────────────────────────────────────────
@@ -552,14 +647,11 @@ export class UI {
       }
       // Click in palette → swap ghost type (reset stage since it's a fresh part)
       if (mx < this.VAB_PALETTE_W) {
-        const cardH = Math.min(62, (H - 60) / VAB_PALETTE.length);
-        VAB_PALETTE.forEach((type, i) => {
-          const cy = 42 + i * (cardH + 4);
-          if (my >= cy && my <= cy + cardH) {
-            this.vabGhostType       = type;
-            this.vabGhostStageIndex = -1;
-          }
-        });
+        const i = this._paletteIdxAt(mx, my);
+        if (i >= 0) {
+          this.vabGhostType       = VAB_PALETTE[i];
+          this.vabGhostStageIndex = -1;
+        }
         return true;
       }
       return false;
@@ -567,16 +659,13 @@ export class UI {
 
     // No ghost — palette click → start ghost
     if (mx < this.VAB_PALETTE_W) {
-      const cardH = Math.min(62, (H - 60) / VAB_PALETTE.length);
-      VAB_PALETTE.forEach((type, i) => {
-        const cy = 42 + i * (cardH + 4);
-        if (my >= cy && my <= cy + cardH) {
-          this.vabGhostType       = type;
-          this.vabGhostStageIndex = -1;
-          this.vabSnapSlot        = rocket.parts.length;
-          this.vabSnapLineY       = this.vabGapYs[rocket.parts.length] ?? this.vabBottomY;
-        }
-      });
+      const i = this._paletteIdxAt(mx, my);
+      if (i >= 0) {
+        this.vabGhostType       = VAB_PALETTE[i];
+        this.vabGhostStageIndex = -1;
+        this.vabSnapSlot        = rocket.parts.length;
+        this.vabSnapLineY       = this.vabGapYs[rocket.parts.length] ?? this.vabBottomY;
+      }
       return true;
     }
 
@@ -620,19 +709,27 @@ export class UI {
     }
   }
 
+  /** Returns the palette card index under (mx, my), accounting for scroll, or -1. */
+  private _paletteIdxAt(mx: number, my: number): number {
+    if (mx >= this.VAB_PALETTE_W) return -1;
+    const CARD_H = 62, CARD_GAP = 4, HEADER = 40, FOOTER = 28;
+    const listTop    = HEADER;
+    const listBottom = this.H - FOOTER;
+    if (my < listTop || my > listBottom) return -1;
+    const scrolled = my - listTop + this._paletteScrollY;
+    const i = Math.floor(scrolled / (CARD_H + CARD_GAP));
+    if (i < 0 || i >= VAB_PALETTE.length) return -1;
+    // Make sure the click lands in the card body, not in the gap
+    if (scrolled % (CARD_H + CARD_GAP) > CARD_H) return -1;
+    return i;
+  }
+
   handleVABMouseMove(mx: number, my: number): void {
     this.mouseX = mx;
     this.mouseY = my;
 
     // Palette hover
-    const cardH = Math.min(62, (this.H - 60) / VAB_PALETTE.length);
-    this.hoveredPaletteIdx = -1;
-    if (mx < this.VAB_PALETTE_W) {
-      VAB_PALETTE.forEach((_, i) => {
-        const cy = 42 + i * (cardH + 4);
-        if (my >= cy && my <= cy + cardH) this.hoveredPaletteIdx = i;
-      });
-    }
+    this.hoveredPaletteIdx = this._paletteIdxAt(mx, my);
 
     // Update snap slot when ghost is active
     if (this.vabGhostType !== null && this.vabGapYs.length > 0) {
@@ -645,6 +742,16 @@ export class UI {
       this.vabSnapSlot  = bestSlot;
       this.vabSnapLineY = this.vabGapYs[bestSlot];
     }
+  }
+
+  /** Scroll the VAB palette panel with the mouse wheel. */
+  handleVABScroll(mx: number, _my: number, deltaY: number): void {
+    if (mx >= this.VAB_PALETTE_W) return;
+    const CARD_H = 62, CARD_GAP = 4, HEADER = 40, FOOTER = 28;
+    const listH        = this.H - HEADER - FOOTER;
+    const totalContentH = VAB_PALETTE.length * (CARD_H + CARD_GAP);
+    const maxScroll    = Math.max(0, totalContentH - listH);
+    this._paletteScrollY = Math.max(0, Math.min(maxScroll, this._paletteScrollY + deltaY * 0.6));
   }
 
   // ─── Staging Screen ────────────────────────────────────────────────────────

@@ -388,15 +388,93 @@ export class Rocket {
    * Summed across all remaining stages.
    */
   getDeltaV(): number {
+    // Use all engine parts (not just thrusting) so VAB shows correct ΔV.
     const engines = this.parts.filter(p => isEnginePart(p.def.type));
     if (engines.length === 0) return 0;
 
-    const isp   = this.getEffectiveIsp();
+    const totalThrust  = engines.reduce((s, p) => s + p.def.maxThrust, 0);
+    const weightedIsp  = engines.reduce((s, p) => s + p.def.maxThrust * p.def.isp, 0);
+    const isp          = totalThrust > 0 ? weightedIsp / totalThrust : 0;
+    if (isp <= 0) return 0;
+
     const m0    = this.getTotalMass();
     const m_dry = this.parts.reduce((s, p) => s + p.def.dryMass, 0);
 
     if (m_dry <= 0 || m0 <= m_dry) return 0;
     return isp * G0 * Math.log(m0 / m_dry);
+  }
+
+  /**
+   * Burn estimate for a planned maneuver of `plannedDV` m/s.
+   *
+   * Selects candidate engines in priority order:
+   *   1. Currently active (firing) engines
+   *   2. Engines in the next staged (but not yet activated) stage
+   *   3. Any surviving engine (last resort)
+   *
+   * Returns vacuum Isp, vacuum thrust, burn time, available ΔV, and
+   * whether any engines were found.  All values are 0 / Infinity if no
+   * engines are present.
+   */
+  getBurnEstimate(plannedDV: number): {
+    isp:         number;
+    thrust:      number;
+    burnTime:    number;
+    dvAvailable: number;
+    hasEngines:  boolean;
+  } {
+    const NO_ENGINE = { isp: 0, thrust: 0, burnTime: Infinity, dvAvailable: 0, hasEngines: false };
+
+    // 1. Active (currently firing) engines
+    let candidates = this.parts.filter(
+      p => p.isActive && isEnginePart(p.def.type) && !p.isDestroyed,
+    );
+
+    // 2. Engines in the next unactivated stage
+    if (candidates.length === 0) {
+      const nextStages = this.stages
+        .filter(s => s.stageIndex > this.currentStage)
+        .sort((a, b) => a.stageIndex - b.stageIndex);
+      for (const stage of nextStages) {
+        const ids = new Set(stage.partIds);
+        const eng = this.parts.filter(
+          p => ids.has(p.id) && isEnginePart(p.def.type) && !p.isDestroyed,
+        );
+        if (eng.length > 0) { candidates = eng; break; }
+      }
+    }
+
+    // 3. Any surviving engine
+    if (candidates.length === 0) {
+      candidates = this.parts.filter(p => isEnginePart(p.def.type) && !p.isDestroyed);
+    }
+
+    if (candidates.length === 0) return NO_ENGINE;
+
+    // Thrust-weighted vacuum Isp
+    const thrust = candidates.reduce((s, p) => s + p.def.maxThrust, 0);
+    const isp    = thrust > 0
+      ? candidates.reduce((s, p) => s + p.def.maxThrust * p.def.isp, 0) / thrust
+      : 0;
+
+    if (isp <= 0 || thrust <= 0) return NO_ENGINE;
+
+    const m0   = this.getTotalMass();
+    const fuel = this.totalFuelRemaining;
+    const mdry = m0 - fuel;
+
+    // Available ΔV with current propellant
+    const dvAvailable = mdry > 0 && m0 > mdry
+      ? isp * G0 * Math.log(m0 / mdry)
+      : 0;
+
+    // Burn time for the planned ΔV (never more than available)
+    const dvCapped = Math.min(plannedDV, dvAvailable + 1);
+    const massFlow = thrust / (isp * G0);
+    const m1       = m0 * Math.exp(-dvCapped / (isp * G0));
+    const burnTime = massFlow > 0 ? (m0 - m1) / massFlow : Infinity;
+
+    return { isp, thrust, burnTime, dvAvailable, hasEngines: true };
   }
 
   // ─── Private Helpers ────────────────────────────────────────────────────────

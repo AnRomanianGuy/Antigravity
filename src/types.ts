@@ -80,6 +80,13 @@ export enum PartType {
   HEAT_SHIELD_HEAVY,
   /** Heavy-duty decoupler — clean separation of large stages */
   DECOUPLER_HEAVY,
+  // ── Orbital / transfer-capable parts ─────────────────────────────────────
+  /** High-thrust heavy booster — 1500 kN, for getting large payloads to orbit */
+  ENGINE_HEAVY,
+  /** Nuclear thermal engine — 800 s Isp, 35 kN vac. Transfer stages only. */
+  ENGINE_NTR,
+  /** Super-large transfer tank — 24 t propellant, pairs with Nerva NTR */
+  FUEL_TANK_XXL,
 }
 
 // ─── Part Definition (static catalogue) ──────────────────────────────────────

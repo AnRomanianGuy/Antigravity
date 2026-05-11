@@ -13,7 +13,7 @@
  *   spiral-of-death on slow devices.  Each step is fixed at PHYSICS_DT.
  */
 
-import { GameScreen, InputState, THEME } from './types';
+import { GameScreen, InputState } from './types';
 import { Rocket } from './Rocket';
 import { PhysicsEngine, R_EARTH, MU_EARTH, R_MOON, MU_MOON, getMoonPosition, getMoonVelocity } from './Physics';
 import { Atmosphere } from './Atmosphere';
@@ -60,6 +60,9 @@ export class Game {
 
   /** Total wall-clock time (for animations) */
   private wallTime = 0;
+
+  /** Show force-vector debug overlay during flight */
+  advancedDebug = false;
 
   /** Input state flags */
   private input: InputState = {
@@ -164,7 +167,7 @@ export class Game {
   }
 
   private _updateOptions(): void {
-    this.ui.renderOptions(() => this._switchTo(GameScreen.MAIN_MENU));
+    this.ui.renderOptions(this.advancedDebug, () => this._switchTo(GameScreen.MAIN_MENU));
   }
 
   private _updateVAB(): void {
@@ -189,18 +192,18 @@ export class Game {
     const highWarp    = warpFactor >= 100;
 
     // ── Physics sub-steps ─────────────────────────────────────────────────
-    // High warp: one large step per frame (thrust disabled for stability).
-    // Low warp:  many PHYSICS_DT steps drained from an accumulator.
+    // High warp (> 10×): RK4 gravity-only, sub-stepped at ≤30 s each.
+    //   No thrust, drag, or heating — numerically stable at any warp level.
+    // Low warp (≤ 10×): fixed PHYSICS_DT steps with full physics.
     if (highWarp) {
-      const bigDt = warpFactor / 60;
-      this.rocket.throttle = 0;          // no thrust during high warp
+      this.rocket.throttle = 0;
       this.throttle        = 0;
       this.rocket.body.mass = this.rocket.getTotalMass();
-      this.physics.step(this.rocket.body, this.rocket, bigDt);
-      // Guard: if position became non-finite (numerical blow-up at large dt), reset warp
+      this.physics.stepWarp(this.rocket.body, warpFactor / 60);
+      // Guard: non-finite means something went badly wrong
       if (!isFinite(this.rocket.body.pos.x) || !isFinite(this.rocket.body.pos.y)) {
-        this.rocket.body.pos.x = isFinite(this.rocket.body.pos.x) ? this.rocket.body.pos.x : 0;
-        this.rocket.body.pos.y = isFinite(this.rocket.body.pos.y) ? this.rocket.body.pos.y : 6_371_001;
+        this.rocket.body.pos.x = 0;
+        this.rocket.body.pos.y = R_EARTH + 1;
         this.rocket.body.vel.x = 0;
         this.rocket.body.vel.y = 0;
         this.warpIndex = 0;
@@ -242,10 +245,10 @@ export class Game {
 
     if (this.isMapOpen) {
       // Render flight behind map
-      this.renderer.renderFlight(this.rocket, frame, this.throttle, this.physics.missionTime);
+      this.renderer.renderFlight(this.rocket, frame, this.throttle, this.physics.missionTime, this.advancedDebug);
       this.mapView.render(this.rocket, this.wallTime, this.physics.missionTime, () => { this.isMapOpen = false; });
     } else {
-      this.renderer.renderFlight(this.rocket, frame, this.throttle, this.physics.missionTime);
+      this.renderer.renderFlight(this.rocket, frame, this.throttle, this.physics.missionTime, this.advancedDebug);
       this.renderer.renderHUD(
         this.rocket,
         frame,
@@ -560,6 +563,9 @@ export class Game {
       if (this.isMapOpen) {
         e.preventDefault();
         this.mapView.handleWheel(e);
+      } else if (this.screen === GameScreen.VAB) {
+        e.preventDefault();
+        this.ui.handleVABScroll(e.clientX, e.clientY, e.deltaY);
       }
     }, { passive: false });
 
@@ -593,7 +599,7 @@ export class Game {
           break;
 
         case GameScreen.OPTIONS:
-          this.ui.handleOptionsClick(mx, my, () => this._switchTo(GameScreen.MAIN_MENU));
+          this.ui.handleOptionsClick(mx, my, () => this._switchTo(GameScreen.MAIN_MENU), (v) => { this.advancedDebug = v; }, this.advancedDebug);
           break;
 
         case GameScreen.VAB:

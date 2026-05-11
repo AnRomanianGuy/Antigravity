@@ -15,6 +15,8 @@ export function isEnginePart(type: PartType): boolean {
   return type === PartType.ENGINE
       || type === PartType.ENGINE_VACUUM
       || type === PartType.ENGINE_VAC_ADV
+      || type === PartType.ENGINE_HEAVY
+      || type === PartType.ENGINE_NTR
       || type === PartType.SRB;
 }
 
@@ -274,6 +276,77 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
     heatResistance: 0.98,   // vs Mk1 0.95
   },
 
+  // ── Orbital / transfer-capable parts ─────────────────────────────────────────
+
+  /**
+   * K1 Mainsail — heavy first-stage booster.
+   * 1 500 kN thrust at sea level; Isp 315 s vac / 285 s SL.
+   * Lets a single stack reach orbit without needing SRBs.
+   */
+  [PartType.ENGINE_HEAVY]: {
+    type: PartType.ENGINE_HEAVY,
+    name: 'K1 Mainsail',
+    dryMass: 3_000,
+    maxFuelMass: 0,
+    maxThrust:  1_500_000,   // 1 500 kN vacuum
+    isp:         315,
+    ispSL:       285,
+    thrustSL:    0.93,       // 93 % at sea level = 1 395 kN
+    dragCoeff:   0.55,
+    crossSection: 2.54,
+    renderW: 62,
+    renderH: 82,
+    color: '#7a2a0a',
+    description: 'Heavy first-stage engine. 1 500 kN vac / 1 395 kN SL. Gets large rockets to orbit.',
+    maxTemperature: 2200,
+    heatResistance: 0.60,
+  },
+
+  /**
+   * LV-N Nerva — nuclear thermal engine.
+   * 35 kN / Isp 800 s vacuum; nearly useless below 50 km.
+   * Pairs with FL-TX2400 for enormous transfer-stage ΔV.
+   */
+  [PartType.ENGINE_NTR]: {
+    type: PartType.ENGINE_NTR,
+    name: 'LV-N Nerva',
+    dryMass: 2_200,
+    maxFuelMass: 0,
+    maxThrust:   35_000,     // 35 kN vacuum
+    isp:          800,       // nuclear thermal Isp
+    ispSL:         50,       // terrible — hot hydrogen stalls in thick air
+    thrustSL:     0.08,      // 8 % at sea level
+    altitudeVacuum: 70_000,  // full efficiency above Kármán line
+    dragCoeff:    0.42,
+    crossSection: 2.10,
+    renderW: 52,
+    renderH: 72,
+    color: '#1a5a2a',
+    description: 'Nuclear thermal engine. Isp 800 s / 35 kN vac. Useless below 50 km. Paired with FL-TX2400 for deep-space transfers.',
+    maxTemperature: 3000,
+    heatResistance: 0.75,
+  },
+
+  /**
+   * FL-TX2400 — super-large transfer tank.
+   * 24 t propellant; intended for NTR-powered orbital or interplanetary stages.
+   */
+  [PartType.FUEL_TANK_XXL]: {
+    type: PartType.FUEL_TANK_XXL,
+    name: 'FL-TX2400 Tank',
+    dryMass: 1_800,
+    maxFuelMass: 24_000,
+    maxThrust: 0,   isp: 0,    ispSL: 0,   thrustSL: 0,
+    dragCoeff: 0.15,
+    crossSection: 2.10,
+    renderW: 52,
+    renderH: 280,
+    color: '#1e2e3e',
+    description: 'Super-large transfer tank (24 t propellant). Use with Nerva NTR for massive ΔV budgets.',
+    maxTemperature: 1400,
+    heatResistance: 0.15,
+  },
+
   /**
    * TR-XL Heavy Decoupler — engineered for large upper stages.
    * Higher mass tolerance; applies a small separation impulse on firing.
@@ -407,4 +480,8 @@ export const VAB_PALETTE: PartType[] = [
   PartType.ENGINE_VAC_ADV,
   PartType.DECOUPLER_HEAVY,
   PartType.HEAT_SHIELD_HEAVY,
+  // ── Orbital / transfer ───────────────────────────────────────────────────────
+  PartType.ENGINE_HEAVY,
+  PartType.FUEL_TANK_XXL,
+  PartType.ENGINE_NTR,
 ];
