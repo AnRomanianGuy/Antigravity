@@ -321,17 +321,38 @@ export class PhysicsEngine {
     // ── Surface clamp (prevent clipping through Earth) ───────────────────────
     const newR = vec2.length(body.pos);
     if (newR < R_EARTH) {
-      // Push back to surface
       const surfaceDir = vec2.normalize(body.pos);
       body.pos = vec2.scale(surfaceDir, R_EARTH);
-      // Kill radial (downward) velocity component
       const vRad = vec2.dot(body.vel, surfaceDir);
       if (vRad < 0) {
         body.vel.x -= surfaceDir.x * vRad;
         body.vel.y -= surfaceDir.y * vRad;
-        // Also kill most horizontal velocity (ground friction)
         body.vel.x *= 0.5;
         body.vel.y *= 0.5;
+      }
+    }
+
+    // ── Moon surface clamp ───────────────────────────────────────────────────
+    // Use relative velocity w.r.t. the Moon so the rocket follows Moon motion
+    // after landing (Moon is orbiting, so a stationary world-space velocity
+    // would cause the rocket to slide off the surface each frame).
+    if (inMoonSOI && moonDist < R_MOON && moonDist > 0) {
+      const moonSurfDir = { x: relToMoon.x / moonDist, y: relToMoon.y / moonDist };
+      body.pos.x = moonPos.x + moonSurfDir.x * R_MOON;
+      body.pos.y = moonPos.y + moonSurfDir.y * R_MOON;
+
+      const mv = getMoonVelocity(this.missionTime);
+      const rvx = body.vel.x - mv.x, rvy = body.vel.y - mv.y;
+      const vRadRel = rvx * moonSurfDir.x + rvy * moonSurfDir.y;
+      if (vRadRel < 0) {
+        // Cancel surface-normal relative velocity (stop sinking)
+        body.vel.x -= moonSurfDir.x * vRadRel;
+        body.vel.y -= moonSurfDir.y * vRadRel;
+        // Damp tangential (sliding) relative velocity — Moon has no atmosphere
+        // but regolith friction slows the rocket down
+        const newRvx = body.vel.x - mv.x, newRvy = body.vel.y - mv.y;
+        body.vel.x = mv.x + newRvx * 0.4;
+        body.vel.y = mv.y + newRvy * 0.4;
       }
     }
 
@@ -578,7 +599,7 @@ export class PhysicsEngine {
       this._rk4GravityStep(body, subDt);
       this.missionTime += subDt;
 
-      // Surface clamp inside warp too (landing / crash)
+      // Earth surface clamp
       const nr = Math.hypot(body.pos.x, body.pos.y);
       if (nr < R_EARTH) {
         const sd = { x: body.pos.x / nr, y: body.pos.y / nr };
@@ -587,6 +608,26 @@ export class PhysicsEngine {
         const vr = body.vel.x * sd.x + body.vel.y * sd.y;
         if (vr < 0) { body.vel.x -= sd.x * vr; body.vel.y -= sd.y * vr; }
         body.vel.x *= 0.3; body.vel.y *= 0.3;
+        break;
+      }
+
+      // Moon surface clamp (use relative velocity so rocket stays with Moon)
+      const mp  = getMoonPosition(this.missionTime);
+      const mdx = body.pos.x - mp.x, mdy = body.pos.y - mp.y;
+      const md  = Math.hypot(mdx, mdy);
+      if (md > 0 && md < R_MOON) {
+        const sd = { x: mdx / md, y: mdy / md };
+        body.pos.x = mp.x + sd.x * R_MOON;
+        body.pos.y = mp.y + sd.y * R_MOON;
+        const mv = getMoonVelocity(this.missionTime);
+        const rvx = body.vel.x - mv.x, rvy = body.vel.y - mv.y;
+        const vr  = rvx * sd.x + rvy * sd.y;
+        if (vr < 0) {
+          body.vel.x -= sd.x * vr;
+          body.vel.y -= sd.y * vr;
+        }
+        body.vel.x = mv.x + (body.vel.x - mv.x) * 0.3;
+        body.vel.y = mv.y + (body.vel.y - mv.y) * 0.3;
         break;
       }
     }

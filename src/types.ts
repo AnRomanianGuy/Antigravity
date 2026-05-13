@@ -50,10 +50,11 @@ export interface RigidBody {
 export enum GameScreen {
   MAIN_MENU,
   OPTIONS,
-  VAB,       // Vehicle Assembly Building
-  STAGING,   // Staging assignment screen
-  FLIGHT,    // Active flight / physics sim
-  MAP_VIEW,  // Orbital map overlay
+  VAB,             // Vehicle Assembly Building
+  STAGING,         // Staging assignment screen
+  FLIGHT,          // Active flight / physics sim
+  MAP_VIEW,        // Orbital map overlay
+  TUTORIAL_SELECT, // Tutorial scenario picker
 }
 
 // ─── Part Types ───────────────────────────────────────────────────────────────

@@ -1,7 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(gh repo *)",
+      "Bash(gh api *)",
+      "WebFetch(domain:github.com)",
+      "Read(//c/Users/troop/.claude/**)",
+      "Read(//c/Users/troop/.claude/skills/**)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

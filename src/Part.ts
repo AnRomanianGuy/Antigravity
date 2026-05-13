@@ -85,18 +85,18 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
   [PartType.ENGINE]: {
     type: PartType.ENGINE,
     name: 'LV-T30 Booster',
-    dryMass: 1250,
+    dryMass: 1_000,
     maxFuelMass: 0,
-    maxThrust: 250_000,  // vacuum thrust, N
-    isp: 350,            // vacuum Isp, s
-    ispSL: 310,          // sea-level Isp (atmosphere reduces nozzle efficiency)
-    thrustSL: 0.92,      // 92% thrust at sea level = 230 kN
+    maxThrust: 330_000,  // vacuum thrust, N
+    isp: 360,            // vacuum Isp, s
+    ispSL: 325,          // sea-level Isp
+    thrustSL: 0.93,      // 93% thrust at sea level = 307 kN
     dragCoeff: 0.50,
     crossSection: 1.54,
     renderW: 44,
     renderH: 62,
     color: '#8a5a3a',
-    description: 'High-thrust launch engine. 250 kN vac / 230 kN SL.',
+    description: 'High-thrust launch engine. 330 kN vac / 307 kN SL.',
     maxTemperature: 2000,
     heatResistance: 0.55,
   },
@@ -104,10 +104,10 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
   [PartType.ENGINE_VACUUM]: {
     type: PartType.ENGINE_VACUUM,
     name: 'LV-909 Terrier',
-    dryMass: 390,
+    dryMass: 360,
     maxFuelMass: 0,
-    maxThrust: 80_000,   // vacuum thrust, N
-    isp: 420,            // high vacuum Isp
+    maxThrust: 100_000,  // vacuum thrust, N
+    isp: 428,            // high vacuum Isp
     ispSL: 40,           // nearly useless at sea level (large nozzle stalls)
     thrustSL: 0.10,      // 10% thrust at sea level — do NOT use for launch
     dragCoeff: 0.35,
@@ -115,7 +115,7 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
     renderW: 50,
     renderH: 55,
     color: '#4a6a9a',
-    description: 'Vacuum-optimised upper-stage engine. 80 kN / Isp 420s vac.',
+    description: 'Vacuum-optimised upper-stage engine. 100 kN / Isp 428s vac.',
     maxTemperature: 2000,
     heatResistance: 0.55,
   },
@@ -171,12 +171,12 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
   [PartType.SRB]: {
     type: PartType.SRB,
     name: 'RT-10 Hammer SRBs',  // always a symmetric pair
-    dryMass: 900,                // 450 kg × 2
-    maxFuelMass: 20_000,         // 10 t × 2 (one per booster)
-    maxThrust: 560_000,          // 280 kN × 2 boosters
-    isp: 230,
-    ispSL: 220,
-    thrustSL: 0.96,
+    dryMass: 800,                // 400 kg × 2
+    maxFuelMass: 24_000,         // 12 t × 2 (one per booster)
+    maxThrust: 660_000,          // 330 kN × 2 boosters
+    isp: 245,
+    ispSL: 235,
+    thrustSL: 0.97,
     ignoreThrottle: true,        // solid fuel — always full throttle
     radialMount: true,           // mounts on the sides, not stacked vertically
     dragCoeff: 0.30,
@@ -184,7 +184,7 @@ export const PART_CATALOGUE: Record<PartType, PartDef> = {
     renderW: 36,
     renderH: 100,
     color: '#5a3a2a',
-    description: 'Pair of solid boosters mounted on the sides. 560 kN total, always full thrust.',
+    description: 'Pair of solid boosters mounted on the sides. 660 kN total, always full thrust.',
     maxTemperature: 1800,
     heatResistance: 0.50,
   },

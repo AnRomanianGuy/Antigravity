@@ -136,7 +136,13 @@ export class Renderer {
     this._drawEarth(camera);
 
     // ── Moon ──────────────────────────────────────────────────────────────
-    this._drawMoon(getMoonPosition(missionTime), camera);
+    const moonWorldPos = getMoonPosition(missionTime);
+    this._drawMoon(moonWorldPos, camera);
+
+    // ── Moon surface detail (shown when close to Moon) ─────────────────
+    if (frame.inMoonSOI) {
+      this._drawMoonSurface(moonWorldPos, camera);
+    }
 
     // ── Launchpad / ground ─────────────────────────────────────────────
     this._drawLaunchpad(camera);
@@ -393,6 +399,89 @@ export class Renderer {
     ctx.arc(mx, my, moonRadPx, 0, Math.PI * 2);
     ctx.strokeStyle = 'rgba(200,200,188,0.14)';
     ctx.lineWidth = Math.max(1, moonRadPx * 0.01);
+    ctx.stroke();
+  }
+
+  // ─── Moon Surface Detail ──────────────────────────────────────────────────
+
+  private _drawMoonSurface(moonWorldPos: Vec2, cam: Camera): void {
+    const ctx = this.ctx;
+    const { W, H } = this;
+    const moonScreen = this._worldToScreen(moonWorldPos, cam);
+    const mpp        = cam.metersPerPixel;
+    const moonRPx    = R_MOON / mpp;
+
+    if (moonRPx < 0.5) return;
+
+    // Only draw surface detail when Moon fills a meaningful part of the screen
+    const mx = moonScreen.x, my = moonScreen.y;
+
+    // Visibility check — skip if Moon's surface circle is entirely off-screen
+    if (mx + moonRPx < 0 || mx - moonRPx > W ||
+        my + moonRPx < 0 || my - moonRPx > H) return;
+
+    // ── Regolith surface ring ──────────────────────────────────────────────
+    // Dark dusty outer crust — two thin concentric rings give depth
+    const crustH = Math.max(2, Math.min(20, 20 / mpp));
+    ctx.beginPath();
+    ctx.arc(mx, my, moonRPx - crustH * 0.4, 0, Math.PI * 2);
+    ctx.strokeStyle = '#c8c0b0';
+    ctx.lineWidth = crustH;
+    ctx.stroke();
+
+    // Darker rock layer below
+    ctx.beginPath();
+    ctx.arc(mx, my, moonRPx - crustH * 2.5, 0, Math.PI * 2);
+    ctx.strokeStyle = '#706860';
+    ctx.lineWidth = crustH * 2;
+    ctx.stroke();
+
+    // ── Craters ────────────────────────────────────────────────────────────
+    // Only visible when Moon is large enough on screen (low altitude)
+    if (moonRPx > 30) {
+      // Deterministic crater positions (fixed angular offsets + radii)
+      const craters: [number, number, number][] = [
+        [0.42, 1.1,  0.055],  // [angle, radialFrac, craterRadiusFrac]
+        [1.85, 0.97, 0.038],
+        [3.0,  1.02, 0.045],
+        [4.2,  0.99, 0.030],
+        [5.5,  1.03, 0.060],
+        [0.9,  1.01, 0.025],
+        [2.3,  0.98, 0.042],
+        [3.8,  1.00, 0.035],
+        [5.0,  0.96, 0.022],
+        [1.3,  1.04, 0.048],
+        [4.7,  1.01, 0.028],
+        [2.8,  0.99, 0.033],
+      ];
+
+      for (const [ang, rFrac, sizeFrac] of craters) {
+        const cx = mx + Math.cos(ang) * moonRPx * rFrac;
+        const cy = my - Math.sin(ang) * moonRPx * rFrac;
+        const cr = moonRPx * sizeFrac;
+        if (cr < 0.8) continue;
+
+        // Crater rim (lighter)
+        ctx.beginPath();
+        ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(210,200,180,0.7)';
+        ctx.lineWidth = Math.max(0.5, cr * 0.18);
+        ctx.stroke();
+
+        // Crater floor (darker)
+        ctx.beginPath();
+        ctx.arc(cx, cy, cr * 0.7, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(50,45,40,0.55)';
+        ctx.fill();
+      }
+    }
+
+    // ── "No atmosphere" horizon indicator ─────────────────────────────────
+    // Sharp crisp limb line (no blue glow — vacuum body)
+    ctx.beginPath();
+    ctx.arc(mx, my, moonRPx, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(180,170,155,0.25)';
+    ctx.lineWidth = Math.max(1, moonRPx * 0.004);
     ctx.stroke();
   }
 
@@ -1541,22 +1630,27 @@ export class Renderer {
     ctx.font = '11px Courier New';
     ctx.textAlign = 'left';
 
-    const alt    = frame.altitude;
-    const altStr = alt < 1000
-      ? `${alt.toFixed(0)} m`
-      : alt < 1_000_000
-        ? `${(alt / 1000).toFixed(2)} km`
-        : `${(alt / 1_000_000).toFixed(4)} Mm`;
+    // When in Moon SOI, show altitude above Moon surface instead of Earth altitude
+    const altDisplay = frame.inMoonSOI ? frame.altAboveNearest : frame.altitude;
+    const altLabel   = frame.inMoonSOI ? 'ALT ☽' : 'ALT';
+    const altStr = altDisplay < 1000
+      ? `${altDisplay.toFixed(0)} m`
+      : altDisplay < 1_000_000
+        ? `${(altDisplay / 1000).toFixed(2)} km`
+        : `${(altDisplay / 1_000_000).toFixed(4)} Mm`;
+
+    // Body label changes with context
+    const bodyLabel = frame.inMoonSOI ? 'MOON' : frame.atmoLayerName;
 
     const rows: [string, string][] = [
-      ['ALT',  altStr],
-      ['SPD',  `${frame.speed.toFixed(1)} m/s`],
-      ['VERT', `${frame.verticalSpeed > 0 ? '+' : ''}${frame.verticalSpeed.toFixed(1)} m/s`],
-      ['MACH', `${frame.mach.toFixed(2)}`],
-      ['Q',    `${(frame.dynamicPressure / 1000).toFixed(2)} kPa`],
-      ['ΔV',   `${rocket.getDeltaV().toFixed(0)} m/s`],
-      ['T+',   this._formatTime(missionTime)],
-      ['ATMO', frame.atmoLayerName],
+      [altLabel, altStr],
+      ['SPD',   `${frame.speed.toFixed(1)} m/s`],
+      ['VERT',  `${frame.verticalSpeed > 0 ? '+' : ''}${frame.verticalSpeed.toFixed(1)} m/s`],
+      ['MACH',  frame.inMoonSOI ? '—' : `${frame.mach.toFixed(2)}`],
+      ['Q',     frame.inMoonSOI ? '0.00 kPa' : `${(frame.dynamicPressure / 1000).toFixed(2)} kPa`],
+      ['ΔV',    `${rocket.getDeltaV().toFixed(0)} m/s`],
+      ['T+',    this._formatTime(missionTime)],
+      ['BODY',  bodyLabel],
     ];
 
     rows.forEach(([label, value], i) => {

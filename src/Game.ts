@@ -20,6 +20,7 @@ import { Atmosphere } from './Atmosphere';
 import { Renderer } from './Renderer';
 import { UI } from './UI';
 import { MapView } from './MapView';
+import { TutorialManager, TUTORIAL_SCENARIOS } from './Tutorial';
 
 // ─── Physics Config ───────────────────────────────────────────────────────────
 
@@ -63,6 +64,15 @@ export class Game {
 
   /** Show force-vector debug overlay during flight */
   advancedDebug = false;
+
+  /** True while the in-flight pause menu is visible */
+  private isPaused = false;
+
+  /** True when OPTIONS was opened from the pause menu (back returns to flight, not main menu) */
+  private _fromPausedFlight = false;
+
+  /** Tutorial system — manages active scenario and step progression */
+  private tutorial = new TutorialManager();
 
   /** Input state flags */
   private input: InputState = {
@@ -138,12 +148,28 @@ export class Game {
 
     // Update / render the active screen
     switch (this.screen) {
-      case GameScreen.MAIN_MENU: this._updateMainMenu(); break;
-      case GameScreen.OPTIONS:   this._updateOptions();  break;
-      case GameScreen.VAB:       this._updateVAB();      break;
-      case GameScreen.STAGING:   this._updateStaging();  break;
-      case GameScreen.FLIGHT:    this._updateFlight(rawDt); break;
+      case GameScreen.MAIN_MENU:       this._updateMainMenu();      break;
+      case GameScreen.OPTIONS:         this._updateOptions();       break;
+      case GameScreen.VAB:             this._updateVAB();           break;
+      case GameScreen.STAGING:         this._updateStaging();       break;
+      case GameScreen.FLIGHT:          this._updateFlight(rawDt);   break;
+      case GameScreen.TUTORIAL_SELECT: this._updateTutorialSelect(); break;
       default: break;
+    }
+
+    // Tutorial tick + overlay (visible on VAB, Staging, and Flight screens)
+    if (this.tutorial.isActive) {
+      const tutCtx = {
+        screen:      this.screen,
+        frame:       this.physics.lastFrame,
+        rocket:      this.rocket,
+        throttle:    this.throttle,
+        missionTime: this.physics.missionTime,
+      };
+      this.tutorial.tick(tutCtx, rawDt);
+      if (this.screen !== GameScreen.MAIN_MENU && this.screen !== GameScreen.TUTORIAL_SELECT) {
+        this.ui.renderTutorialOverlay(this.tutorial);
+      }
     }
 
     // Message overlay (rendered on top of anything)
@@ -161,13 +187,29 @@ export class Game {
     this.ui.renderMainMenu(
       this.wallTime,
       () => this._switchTo(GameScreen.VAB),
+      () => this._switchTo(GameScreen.TUTORIAL_SELECT),
       () => this._switchTo(GameScreen.OPTIONS),
       () => { /* exit: no-op in browser */ },
     );
   }
 
+  private _updateTutorialSelect(): void {
+    this.ui.renderTutorialSelect(
+      TUTORIAL_SCENARIOS,
+      this.tutorial.completedIds,
+      (idx) => {
+        this.tutorial.start(idx);
+        this._switchTo(GameScreen.VAB);  // resets rocket to empty; tutorial overlay guides from here
+      },
+      () => this._switchTo(GameScreen.MAIN_MENU),
+    );
+  }
+
   private _updateOptions(): void {
-    this.ui.renderOptions(this.advancedDebug, () => this._switchTo(GameScreen.MAIN_MENU));
+    const onBack = this._fromPausedFlight
+      ? () => { this._fromPausedFlight = false; this._switchTo(GameScreen.FLIGHT); }
+      : () => this._switchTo(GameScreen.MAIN_MENU);
+    this.ui.renderOptions(this.advancedDebug, onBack);
   }
 
   private _updateVAB(): void {
@@ -191,11 +233,10 @@ export class Game {
     const warpFactor  = this.WARP_LEVELS[this.warpIndex];
     const highWarp    = warpFactor >= 100;
 
-    // ── Physics sub-steps ─────────────────────────────────────────────────
-    // High warp (> 10×): RK4 gravity-only, sub-stepped at ≤30 s each.
-    //   No thrust, drag, or heating — numerically stable at any warp level.
-    // Low warp (≤ 10×): fixed PHYSICS_DT steps with full physics.
-    if (highWarp) {
+    // ── Physics sub-steps (skipped while paused) ──────────────────────────
+    if (this.isPaused) {
+      // Do nothing — accumulator stays frozen
+    } else if (highWarp) {
       this.rocket.throttle = 0;
       this.throttle        = 0;
       this.rocket.body.mass = this.rocket.getTotalMass();
@@ -224,27 +265,28 @@ export class Game {
       }
     }
 
-    // ── Unlimited fuel cheat ──────────────────────────────────────────────
-    if (this.cheatUnlimFuel) {
-      for (const part of this.rocket.parts) {
-        if (part.def.maxFuelMass > 0) {
-          part.fuelRemaining = part.def.maxFuelMass;
+    if (!this.isPaused) {
+      // ── Unlimited fuel cheat ────────────────────────────────────────────
+      if (this.cheatUnlimFuel) {
+        for (const part of this.rocket.parts) {
+          if (part.def.maxFuelMass > 0) {
+            part.fuelRemaining = part.def.maxFuelMass;
+          }
         }
+        this.rocket.body.mass = this.rocket.getTotalMass();
       }
-      this.rocket.body.mass = this.rocket.getTotalMass();
+
+      // ── Burn-node state ─────────────────────────────────────────────────
+      this.mapView.tick(this.rocket, this.physics.missionTime);
+
+      // ── Check mission events ────────────────────────────────────────────
+      this._checkFlightEvents();
     }
-
-    // ── Burn-node state (must run every frame, even when map is closed) ──────
-    this.mapView.tick(this.rocket, this.physics.missionTime);
-
-    // ── Check mission events ──────────────────────────────────────────────
-    this._checkFlightEvents();
 
     // ── Render ────────────────────────────────────────────────────────────
     const frame = this.physics.lastFrame;
 
     if (this.isMapOpen) {
-      // Render flight behind map
       this.renderer.renderFlight(this.rocket, frame, this.throttle, this.physics.missionTime, this.advancedDebug);
       this.mapView.render(this.rocket, this.wallTime, this.physics.missionTime, () => { this.isMapOpen = false; });
     } else {
@@ -259,12 +301,34 @@ export class Game {
       );
       this.renderer.renderBurnGuidance(this.rocket, this.mapView.node, this.physics.missionTime, this.mapView.dvRemaining);
     }
+
+    // ── Pause overlay (topmost, only in flight view) ──────────────────────
+    if (this.isPaused && !this.isMapOpen) {
+      this.ui.renderPauseMenu(
+        () => { this.isPaused = false; },
+        () => { this._fromPausedFlight = true; this._switchTo(GameScreen.OPTIONS); },
+        () => { this.isPaused = false; this._switchTo(GameScreen.MAIN_MENU); },
+      );
+    }
   }
 
   // ─── Input Processing ──────────────────────────────────────────────────────
 
   private _processInput(dt: number): void {
     if (this.screen !== GameScreen.FLIGHT) return;
+
+    // ESC toggles pause (or closes map) — always handled first
+    if (this.escPressed) {
+      this.escPressed = false;
+      if (this.isMapOpen) {
+        this.isMapOpen = false;
+      } else {
+        this.isPaused = !this.isPaused;
+      }
+    }
+
+    // All other flight input is suppressed while paused
+    if (this.isPaused) return;
 
     // Throttle
     if (this.input.throttleUp)   this.throttle = Math.min(1, this.throttle + THROTTLE_RATE * dt);
@@ -385,14 +449,6 @@ export class Game {
       if (this.isMapOpen) this.mapView.resetView();
     }
 
-    if (this.escPressed) {
-      this.escPressed = false;
-      if (this.isMapOpen) {
-        this.isMapOpen = false;
-      } else {
-        this._switchTo(GameScreen.MAIN_MENU);
-      }
-    }
   }
 
   // ─── Flight Events ─────────────────────────────────────────────────────────
@@ -443,11 +499,13 @@ export class Game {
 
     this.rocket.placeOnLaunchpad();
     this.physics.reset();
-    this.throttle    = 0;
-    this.isMapOpen   = false;
-    this.accumulator = 0;
-    this.showMessage = false;
-    this.warpIndex   = 0;
+    this.throttle          = 0;
+    this.isMapOpen         = false;
+    this.accumulator       = 0;
+    this.showMessage       = false;
+    this.warpIndex         = 0;
+    this.isPaused          = false;
+    this._fromPausedFlight = false;
 
     this._switchTo(GameScreen.FLIGHT);
   }
@@ -588,19 +646,52 @@ export class Game {
         return;
       }
 
+      // Tutorial overlay skip / scenario-complete dismiss — checked before screen routing
+      if (this.tutorial.isActive &&
+          this.screen !== GameScreen.MAIN_MENU &&
+          this.screen !== GameScreen.TUTORIAL_SELECT) {
+        const acted = this.ui.handleTutorialOverlayClick(mx, my, this.tutorial);
+        if (acted) {
+          if (this.tutorial.scenarioDone) {
+            this.tutorial.stop();
+            this._switchTo(GameScreen.TUTORIAL_SELECT);
+          } else {
+            this.tutorial.stop();
+          }
+          return;
+        }
+      }
+
       switch (this.screen) {
         case GameScreen.MAIN_MENU:
           this.ui.handleMainMenuClick(
             mx, my,
             () => this._switchTo(GameScreen.VAB),
+            () => this._switchTo(GameScreen.TUTORIAL_SELECT),
             () => this._switchTo(GameScreen.OPTIONS),
             () => {},
           );
           break;
 
-        case GameScreen.OPTIONS:
-          this.ui.handleOptionsClick(mx, my, () => this._switchTo(GameScreen.MAIN_MENU), (v) => { this.advancedDebug = v; }, this.advancedDebug);
+        case GameScreen.TUTORIAL_SELECT:
+          this.ui.handleTutorialSelectClick(
+            mx, my,
+            TUTORIAL_SCENARIOS,
+            (idx) => {
+              this.tutorial.start(idx);
+              this._switchTo(GameScreen.VAB);
+            },
+            () => this._switchTo(GameScreen.MAIN_MENU),
+          );
           break;
+
+        case GameScreen.OPTIONS: {
+          const optBack = this._fromPausedFlight
+            ? () => { this._fromPausedFlight = false; this._switchTo(GameScreen.FLIGHT); }
+            : () => this._switchTo(GameScreen.MAIN_MENU);
+          this.ui.handleOptionsClick(mx, my, optBack, (v) => { this.advancedDebug = v; }, this.advancedDebug);
+          break;
+        }
 
         case GameScreen.VAB:
           this.ui.handleVABClick(
@@ -620,7 +711,14 @@ export class Game {
           break;
 
         case GameScreen.FLIGHT:
-          if (this.isMapOpen) {
+          if (this.isPaused && !this.isMapOpen) {
+            this.ui.handlePauseClick(
+              mx, my,
+              () => { this.isPaused = false; },
+              () => { this._fromPausedFlight = true; this._switchTo(GameScreen.OPTIONS); },
+              () => { this.isPaused = false; this._switchTo(GameScreen.MAIN_MENU); },
+            );
+          } else if (this.isMapOpen) {
             this.mapView.handleClick(mx, my);
           } else {
             const wd = this.renderer.warpDownBtn;

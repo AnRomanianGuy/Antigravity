@@ -105,33 +105,33 @@
     [3 /* ENGINE */]: {
       type: 3 /* ENGINE */,
       name: "LV-T30 Booster",
-      dryMass: 1250,
+      dryMass: 1e3,
       maxFuelMass: 0,
-      maxThrust: 25e4,
+      maxThrust: 33e4,
       // vacuum thrust, N
-      isp: 350,
+      isp: 360,
       // vacuum Isp, s
-      ispSL: 310,
-      // sea-level Isp (atmosphere reduces nozzle efficiency)
-      thrustSL: 0.92,
-      // 92% thrust at sea level = 230 kN
+      ispSL: 325,
+      // sea-level Isp
+      thrustSL: 0.93,
+      // 93% thrust at sea level = 307 kN
       dragCoeff: 0.5,
       crossSection: 1.54,
       renderW: 44,
       renderH: 62,
       color: "#8a5a3a",
-      description: "High-thrust launch engine. 250 kN vac / 230 kN SL.",
+      description: "High-thrust launch engine. 330 kN vac / 307 kN SL.",
       maxTemperature: 2e3,
       heatResistance: 0.55
     },
     [4 /* ENGINE_VACUUM */]: {
       type: 4 /* ENGINE_VACUUM */,
       name: "LV-909 Terrier",
-      dryMass: 390,
+      dryMass: 360,
       maxFuelMass: 0,
-      maxThrust: 8e4,
+      maxThrust: 1e5,
       // vacuum thrust, N
-      isp: 420,
+      isp: 428,
       // high vacuum Isp
       ispSL: 40,
       // nearly useless at sea level (large nozzle stalls)
@@ -143,7 +143,7 @@
       renderW: 50,
       renderH: 55,
       color: "#4a6a9a",
-      description: "Vacuum-optimised upper-stage engine. 80 kN / Isp 420s vac.",
+      description: "Vacuum-optimised upper-stage engine. 100 kN / Isp 428s vac.",
       maxTemperature: 2e3,
       heatResistance: 0.55
     },
@@ -205,15 +205,15 @@
       type: 8 /* SRB */,
       name: "RT-10 Hammer SRBs",
       // always a symmetric pair
-      dryMass: 900,
-      // 450 kg × 2
-      maxFuelMass: 2e4,
-      // 10 t × 2 (one per booster)
-      maxThrust: 56e4,
-      // 280 kN × 2 boosters
-      isp: 230,
-      ispSL: 220,
-      thrustSL: 0.96,
+      dryMass: 800,
+      // 400 kg × 2
+      maxFuelMass: 24e3,
+      // 12 t × 2 (one per booster)
+      maxThrust: 66e4,
+      // 330 kN × 2 boosters
+      isp: 245,
+      ispSL: 235,
+      thrustSL: 0.97,
       ignoreThrottle: true,
       // solid fuel — always full throttle
       radialMount: true,
@@ -223,7 +223,7 @@
       renderW: 36,
       renderH: 100,
       color: "#5a3a2a",
-      description: "Pair of solid boosters mounted on the sides. 560 kN total, always full thrust.",
+      description: "Pair of solid boosters mounted on the sides. 660 kN total, always full thrust.",
       maxTemperature: 1800,
       heatResistance: 0.5
     },
@@ -681,6 +681,21 @@
           body.vel.y *= 0.5;
         }
       }
+      if (inMoonSOI && moonDist < R_MOON && moonDist > 0) {
+        const moonSurfDir = { x: relToMoon.x / moonDist, y: relToMoon.y / moonDist };
+        body.pos.x = moonPos.x + moonSurfDir.x * R_MOON;
+        body.pos.y = moonPos.y + moonSurfDir.y * R_MOON;
+        const mv = getMoonVelocity(this.missionTime);
+        const rvx = body.vel.x - mv.x, rvy = body.vel.y - mv.y;
+        const vRadRel = rvx * moonSurfDir.x + rvy * moonSurfDir.y;
+        if (vRadRel < 0) {
+          body.vel.x -= moonSurfDir.x * vRadRel;
+          body.vel.y -= moonSurfDir.y * vRadRel;
+          const newRvx = body.vel.x - mv.x, newRvy = body.vel.y - mv.y;
+          body.vel.x = mv.x + newRvx * 0.4;
+          body.vel.y = mv.y + newRvy * 0.4;
+        }
+      }
       body.angVel *= ANGULAR_DAMPING;
       body.angle += body.angVel * dt;
       const heatingIntensity = this.atmo.getHeatingIntensity(altitude, speed);
@@ -778,8 +793,8 @@
      * @param dt        Time step (seconds)
      * @param hasPod    Whether a command pod (with SAS) is present
      */
-    applyRotation(body, direction, dt, hasPod) {
-      const baseTorque = hasPod ? REACTION_WHEEL_TORQUE : GIMBAL_TORQUE_COEFF;
+    applyRotation(body, direction, dt, hasPod2) {
+      const baseTorque = hasPod2 ? REACTION_WHEEL_TORQUE : GIMBAL_TORQUE_COEFF;
       const L = 30;
       const I = Math.max(body.mass * L * L / 12, 1);
       const alpha = Math.min(8, Math.max(0.3, baseTorque / I));
@@ -789,8 +804,8 @@
      * Effective angular acceleration (rad/s²) that `applyRotation` will produce for this body.
      * Used by the autopilot to compute a safe maximum angular velocity.
      */
-    getRotationAlpha(body, hasPod) {
-      const baseTorque = hasPod ? REACTION_WHEEL_TORQUE : GIMBAL_TORQUE_COEFF;
+    getRotationAlpha(body, hasPod2) {
+      const baseTorque = hasPod2 ? REACTION_WHEEL_TORQUE : GIMBAL_TORQUE_COEFF;
       const L = 30;
       const I = Math.max(body.mass * L * L / 12, 1);
       return Math.min(8, Math.max(0.3, baseTorque / I));
@@ -882,6 +897,24 @@
           }
           body.vel.x *= 0.3;
           body.vel.y *= 0.3;
+          break;
+        }
+        const mp = getMoonPosition(this.missionTime);
+        const mdx = body.pos.x - mp.x, mdy = body.pos.y - mp.y;
+        const md = Math.hypot(mdx, mdy);
+        if (md > 0 && md < R_MOON) {
+          const sd = { x: mdx / md, y: mdy / md };
+          body.pos.x = mp.x + sd.x * R_MOON;
+          body.pos.y = mp.y + sd.y * R_MOON;
+          const mv = getMoonVelocity(this.missionTime);
+          const rvx = body.vel.x - mv.x, rvy = body.vel.y - mv.y;
+          const vr = rvx * sd.x + rvy * sd.y;
+          if (vr < 0) {
+            body.vel.x -= sd.x * vr;
+            body.vel.y -= sd.y * vr;
+          }
+          body.vel.x = mv.x + (body.vel.x - mv.x) * 0.3;
+          body.vel.y = mv.y + (body.vel.y - mv.y) * 0.3;
           break;
         }
       }
@@ -1256,24 +1289,83 @@
     }
     // ─── Delta-V Budget ─────────────────────────────────────────────────────────
     /**
-     * Compute total remaining ΔV using the Tsiolkovsky rocket equation:
-     *   ΔV = Isp · g₀ · ln(m₀ / m_dry)
-     * Summed across all remaining stages.
+     * Compute total ΔV using a staged Tsiolkovsky calculation.
+     *
+     * Staged decouplers divide the rocket into sections (bottom → top).
+     * Each section's fuel is burned by the engines in that section.
+     * If a section has no engine, the nearest engine above it is used
+     * (drop-tank configuration).  After each section burns out the
+     * decoupler fires and that dead mass is jettisoned, improving the
+     * mass ratio for subsequent sections.
+     *
+     * Falls back to a single-stage calculation when there are no staged
+     * decouplers (the result is identical to the Tsiolkovsky equation
+     * applied to the whole rocket).
      */
     getDeltaV() {
-      const engines = this.parts.filter((p) => isEnginePart(p.def.type));
-      if (engines.length === 0)
+      if (this.parts.length === 0)
         return 0;
-      const totalThrust = engines.reduce((s, p) => s + p.def.maxThrust, 0);
-      const weightedIsp = engines.reduce((s, p) => s + p.def.maxThrust * p.def.isp, 0);
-      const isp = totalThrust > 0 ? weightedIsp / totalThrust : 0;
-      if (isp <= 0)
+      const allEngines = this.parts.filter((p) => isEnginePart(p.def.type));
+      if (allEngines.length === 0)
         return 0;
-      const m0 = this.getTotalMass();
-      const m_dry = this.parts.reduce((s, p) => s + p.def.dryMass, 0);
-      if (m_dry <= 0 || m0 <= m_dry)
-        return 0;
-      return isp * G0 * Math.log(m0 / m_dry);
+      const snap = this.parts.map((p) => ({
+        slot: p.slotIndex,
+        dryMass: p.def.dryMass,
+        fuelMass: p.fuelRemaining,
+        // current remaining fuel (works for both VAB and flight)
+        isEngine: isEnginePart(p.def.type),
+        isDecoupler: isDecouplerPart(p.def.type),
+        stageIndex: p.stageIndex,
+        maxThrust: p.def.maxThrust,
+        isp: p.def.isp
+      }));
+      const decouplers = snap.filter((p) => p.isDecoupler && p.stageIndex >= 0).sort((a, b) => a.slot - b.slot);
+      if (decouplers.length === 0) {
+        const thrust = allEngines.reduce((s, p) => s + p.def.maxThrust, 0);
+        const isp = thrust > 0 ? allEngines.reduce((s, p) => s + p.def.maxThrust * p.def.isp, 0) / thrust : 0;
+        if (isp <= 0)
+          return 0;
+        const m0 = snap.reduce((s, p) => s + p.dryMass + p.fuelMass, 0);
+        const mdry = snap.reduce((s, p) => s + p.dryMass, 0);
+        return m0 > mdry ? isp * G0 * Math.log(m0 / mdry) : 0;
+      }
+      let pool = [...snap];
+      let totalDV = 0;
+      for (const dec of decouplers) {
+        const currentMass = pool.reduce((s, p) => s + p.dryMass + p.fuelMass, 0);
+        if (currentMass <= 0)
+          break;
+        const section = pool.filter((p) => p.slot <= dec.slot);
+        const sectionFuel = section.reduce((s, p) => s + p.fuelMass, 0);
+        if (sectionFuel > 0) {
+          let burners = section.filter((p) => p.isEngine);
+          if (burners.length === 0) {
+            const aboveEngine = pool.filter((p) => p.slot > dec.slot && p.isEngine).sort((a, b) => a.slot - b.slot)[0];
+            if (aboveEngine)
+              burners = [aboveEngine];
+          }
+          if (burners.length > 0) {
+            const thrust = burners.reduce((s, p) => s + p.maxThrust, 0);
+            const isp = thrust > 0 ? burners.reduce((s, p) => s + p.maxThrust * p.isp, 0) / thrust : 0;
+            if (isp > 0) {
+              const mBurnout = currentMass - sectionFuel;
+              if (mBurnout > 0)
+                totalDV += isp * G0 * Math.log(currentMass / mBurnout);
+            }
+          }
+        }
+        pool = pool.filter((p) => p.slot > dec.slot);
+      }
+      const finalMass = pool.reduce((s, p) => s + p.dryMass + p.fuelMass, 0);
+      const finalDry = pool.reduce((s, p) => s + p.dryMass, 0);
+      const finalEng = pool.filter((p) => p.isEngine);
+      if (finalEng.length > 0 && finalMass > finalDry) {
+        const thrust = finalEng.reduce((s, p) => s + p.maxThrust, 0);
+        const isp = thrust > 0 ? finalEng.reduce((s, p) => s + p.maxThrust * p.isp, 0) / thrust : 0;
+        if (isp > 0)
+          totalDV += isp * G0 * Math.log(finalMass / finalDry);
+      }
+      return totalDV;
     }
     /**
      * Burn estimate for a planned maneuver of `plannedDV` m/s.
@@ -1542,7 +1634,11 @@
       const starFade = skyAlt < 3e4 ? skyAlt / 3e4 : 1;
       this._drawStars(camera, starFade);
       this._drawEarth(camera);
-      this._drawMoon(getMoonPosition(missionTime), camera);
+      const moonWorldPos = getMoonPosition(missionTime);
+      this._drawMoon(moonWorldPos, camera);
+      if (frame.inMoonSOI) {
+        this._drawMoonSurface(moonWorldPos, camera);
+      }
       this._drawLaunchpad(camera);
       const rocketScreenPos = this._worldToScreen(rocket.body.pos, camera);
       ctx.save();
@@ -1738,6 +1834,68 @@
       ctx.arc(mx, my, moonRadPx, 0, Math.PI * 2);
       ctx.strokeStyle = "rgba(200,200,188,0.14)";
       ctx.lineWidth = Math.max(1, moonRadPx * 0.01);
+      ctx.stroke();
+    }
+    // ─── Moon Surface Detail ──────────────────────────────────────────────────
+    _drawMoonSurface(moonWorldPos, cam) {
+      const ctx = this.ctx;
+      const { W, H } = this;
+      const moonScreen = this._worldToScreen(moonWorldPos, cam);
+      const mpp = cam.metersPerPixel;
+      const moonRPx = R_MOON / mpp;
+      if (moonRPx < 0.5)
+        return;
+      const mx = moonScreen.x, my = moonScreen.y;
+      if (mx + moonRPx < 0 || mx - moonRPx > W || my + moonRPx < 0 || my - moonRPx > H)
+        return;
+      const crustH = Math.max(2, Math.min(20, 20 / mpp));
+      ctx.beginPath();
+      ctx.arc(mx, my, moonRPx - crustH * 0.4, 0, Math.PI * 2);
+      ctx.strokeStyle = "#c8c0b0";
+      ctx.lineWidth = crustH;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(mx, my, moonRPx - crustH * 2.5, 0, Math.PI * 2);
+      ctx.strokeStyle = "#706860";
+      ctx.lineWidth = crustH * 2;
+      ctx.stroke();
+      if (moonRPx > 30) {
+        const craters = [
+          [0.42, 1.1, 0.055],
+          // [angle, radialFrac, craterRadiusFrac]
+          [1.85, 0.97, 0.038],
+          [3, 1.02, 0.045],
+          [4.2, 0.99, 0.03],
+          [5.5, 1.03, 0.06],
+          [0.9, 1.01, 0.025],
+          [2.3, 0.98, 0.042],
+          [3.8, 1, 0.035],
+          [5, 0.96, 0.022],
+          [1.3, 1.04, 0.048],
+          [4.7, 1.01, 0.028],
+          [2.8, 0.99, 0.033]
+        ];
+        for (const [ang, rFrac, sizeFrac] of craters) {
+          const cx = mx + Math.cos(ang) * moonRPx * rFrac;
+          const cy = my - Math.sin(ang) * moonRPx * rFrac;
+          const cr = moonRPx * sizeFrac;
+          if (cr < 0.8)
+            continue;
+          ctx.beginPath();
+          ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+          ctx.strokeStyle = "rgba(210,200,180,0.7)";
+          ctx.lineWidth = Math.max(0.5, cr * 0.18);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(cx, cy, cr * 0.7, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(50,45,40,0.55)";
+          ctx.fill();
+        }
+      }
+      ctx.beginPath();
+      ctx.arc(mx, my, moonRPx, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(180,170,155,0.25)";
+      ctx.lineWidth = Math.max(1, moonRPx * 4e-3);
       ctx.stroke();
     }
     // ─── Ground / Launchpad Surface ───────────────────────────────────────────
@@ -2734,17 +2892,19 @@
       ctx.fillStyle = THEME.textDim;
       ctx.font = "11px Courier New";
       ctx.textAlign = "left";
-      const alt = frame.altitude;
-      const altStr = alt < 1e3 ? `${alt.toFixed(0)} m` : alt < 1e6 ? `${(alt / 1e3).toFixed(2)} km` : `${(alt / 1e6).toFixed(4)} Mm`;
+      const altDisplay = frame.inMoonSOI ? frame.altAboveNearest : frame.altitude;
+      const altLabel = frame.inMoonSOI ? "ALT \u263D" : "ALT";
+      const altStr = altDisplay < 1e3 ? `${altDisplay.toFixed(0)} m` : altDisplay < 1e6 ? `${(altDisplay / 1e3).toFixed(2)} km` : `${(altDisplay / 1e6).toFixed(4)} Mm`;
+      const bodyLabel = frame.inMoonSOI ? "MOON" : frame.atmoLayerName;
       const rows = [
-        ["ALT", altStr],
+        [altLabel, altStr],
         ["SPD", `${frame.speed.toFixed(1)} m/s`],
         ["VERT", `${frame.verticalSpeed > 0 ? "+" : ""}${frame.verticalSpeed.toFixed(1)} m/s`],
-        ["MACH", `${frame.mach.toFixed(2)}`],
-        ["Q", `${(frame.dynamicPressure / 1e3).toFixed(2)} kPa`],
+        ["MACH", frame.inMoonSOI ? "\u2014" : `${frame.mach.toFixed(2)}`],
+        ["Q", frame.inMoonSOI ? "0.00 kPa" : `${(frame.dynamicPressure / 1e3).toFixed(2)} kPa`],
         ["\u0394V", `${rocket.getDeltaV().toFixed(0)} m/s`],
         ["T+", this._formatTime(missionTime)],
-        ["ATMO", frame.atmoLayerName]
+        ["BODY", bodyLabel]
       ];
       rows.forEach(([label, value], i) => {
         const ry = panelY + 22 + i * 22;
@@ -3149,7 +3309,7 @@
       this.particles = makeParticles(w, h, 80);
     }
     // ─── Main Menu ─────────────────────────────────────────────────────────────
-    renderMainMenu(time, onStart, onOptions, onExit) {
+    renderMainMenu(time, onStart, onTutorial, onOptions, onExit) {
       const ctx = this.ctx;
       const { W, H } = this;
       ctx.fillStyle = THEME.bg;
@@ -3175,12 +3335,13 @@
       ctx.fillText("v0.1.0", W / 2, titleY + 58);
       const bw = 220, bh = 44;
       const bx = W / 2 - bw / 2;
-      const gap = 16;
-      const by0 = H * 0.5;
+      const gap = 12;
+      const by0 = H * 0.47;
       const buttons = [
         { x: bx, y: by0, w: bw, h: bh, label: "\u25B6  START GAME", action: onStart, accent: true },
-        { x: bx, y: by0 + bh + gap, w: bw, h: bh, label: "\u2699  OPTIONS", action: onOptions },
-        { x: bx, y: by0 + (bh + gap) * 2, w: bw, h: bh, label: "\u2715  EXIT", action: onExit }
+        { x: bx, y: by0 + (bh + gap), w: bw, h: bh, label: "\u{1F4D6}  TUTORIAL", action: onTutorial },
+        { x: bx, y: by0 + (bh + gap) * 2, w: bw, h: bh, label: "\u2699  OPTIONS", action: onOptions },
+        { x: bx, y: by0 + (bh + gap) * 3, w: bw, h: bh, label: "\u2715  EXIT", action: onExit }
       ];
       for (const btn of buttons) {
         drawButton(ctx, btn, isHit(btn, this.mouseX, this.mouseY));
@@ -3202,16 +3363,17 @@
       ctx.stroke();
     }
     /** Handle click on main menu. Returns true if a button was hit. */
-    handleMainMenuClick(mx, my, onStart, onOptions, onExit) {
+    handleMainMenuClick(mx, my, onStart, onTutorial, onOptions, onExit) {
       const { W, H } = this;
       const bw = 220, bh = 44;
       const bx = W / 2 - bw / 2;
-      const gap = 16;
-      const by0 = H * 0.5;
+      const gap = 12;
+      const by0 = H * 0.47;
       const buttons = [
         { x: bx, y: by0, w: bw, h: bh, label: "\u25B6  START GAME", action: onStart, accent: true },
-        { x: bx, y: by0 + bh + gap, w: bw, h: bh, label: "\u2699  OPTIONS", action: onOptions },
-        { x: bx, y: by0 + (bh + gap) * 2, w: bw, h: bh, label: "\u2715  EXIT", action: onExit }
+        { x: bx, y: by0 + (bh + gap), w: bw, h: bh, label: "\u{1F4D6}  TUTORIAL", action: onTutorial },
+        { x: bx, y: by0 + (bh + gap) * 2, w: bw, h: bh, label: "\u2699  OPTIONS", action: onOptions },
+        { x: bx, y: by0 + (bh + gap) * 3, w: bw, h: bh, label: "\u2715  EXIT", action: onExit }
       ];
       for (const btn of buttons) {
         if (isHit(btn, mx, my)) {
@@ -3828,7 +3990,318 @@
       }
       return false;
     }
+    // ─── Pause Overlay ────────────────────────────────────────────────────────
+    renderPauseMenu(onResume, onOptions, onMainMenu) {
+      const ctx = this.ctx;
+      const { W, H } = this;
+      ctx.fillStyle = "rgba(0,5,18,0.62)";
+      ctx.fillRect(0, 0, W, H);
+      const vig = ctx.createRadialGradient(W / 2, H / 2, H * 0.15, W / 2, H / 2, H * 0.75);
+      vig.addColorStop(0, "rgba(0,0,0,0)");
+      vig.addColorStop(1, "rgba(0,0,10,0.45)");
+      ctx.fillStyle = vig;
+      ctx.fillRect(0, 0, W, H);
+      const pw = 340, ph2 = 268;
+      const px = (W - pw) / 2, py = (H - ph2) / 2;
+      ctx.fillStyle = "rgba(6,12,26,0.97)";
+      roundRect(ctx, px, py, pw, ph2, 12);
+      ctx.fill();
+      ctx.strokeStyle = THEME.accent;
+      ctx.lineWidth = 1.5;
+      roundRect(ctx, px, py, pw, ph2, 12);
+      ctx.stroke();
+      ctx.save();
+      ctx.shadowColor = THEME.accent;
+      ctx.shadowBlur = 20;
+      ctx.fillStyle = THEME.accent;
+      ctx.font = "bold 26px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("PAUSED", W / 2, py + 46);
+      ctx.restore();
+      ctx.strokeStyle = `${THEME.panelBorder}`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(px + 24, py + 60);
+      ctx.lineTo(px + pw - 24, py + 60);
+      ctx.stroke();
+      const bw = 260, bh = 44, bx2 = (W - bw) / 2;
+      const gap = 10;
+      const by0 = py + 76;
+      const buttons = [
+        { x: bx2, y: by0, w: bw, h: bh, label: "\u25B6  RESUME", action: onResume, accent: true },
+        { x: bx2, y: by0 + bh + gap, w: bw, h: bh, label: "\u2699  OPTIONS", action: onOptions },
+        { x: bx2, y: by0 + (bh + gap) * 2, w: bw, h: bh, label: "\u2715  BACK TO MAIN MENU", action: onMainMenu }
+      ];
+      for (const btn of buttons) {
+        drawButton(ctx, btn, isHit(btn, this.mouseX, this.mouseY));
+      }
+      ctx.fillStyle = "rgba(100,140,180,0.45)";
+      ctx.font = "11px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("ESC to resume", W / 2, py + ph2 - 13);
+    }
+    handlePauseClick(mx, my, onResume, onOptions, onMainMenu) {
+      const { W, H } = this;
+      const bw = 260, bh = 44, bx2 = (W - bw) / 2;
+      const gap = 10;
+      const ph2 = 268;
+      const py = (H - ph2) / 2;
+      const by0 = py + 76;
+      const buttons = [
+        { x: bx2, y: by0, w: bw, h: bh, label: "", action: onResume },
+        { x: bx2, y: by0 + bh + gap, w: bw, h: bh, label: "", action: onOptions },
+        { x: bx2, y: by0 + (bh + gap) * 2, w: bw, h: bh, label: "", action: onMainMenu }
+      ];
+      for (const btn of buttons) {
+        if (isHit(btn, mx, my)) {
+          btn.action();
+          return true;
+        }
+      }
+      return false;
+    }
+    // ─── Tutorial Select Screen ──────────────────────────────────────────────
+    renderTutorialSelect(scenarios, completedIds, onSelect, onBack) {
+      const ctx = this.ctx;
+      const { W, H } = this;
+      ctx.fillStyle = THEME.bg;
+      ctx.fillRect(0, 0, W, H);
+      this._drawMenuStars(0);
+      ctx.save();
+      ctx.shadowColor = THEME.accent;
+      ctx.shadowBlur = 16;
+      ctx.fillStyle = THEME.accent;
+      ctx.font = "bold 26px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("TUTORIAL MISSIONS", W / 2, 52);
+      ctx.restore();
+      ctx.fillStyle = THEME.textDim;
+      ctx.font = "12px Courier New";
+      ctx.textAlign = "center";
+      ctx.fillText("Complete scenarios in order to master rocket science.", W / 2, 76);
+      ctx.strokeStyle = THEME.panelBorder;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(40, 88);
+      ctx.lineTo(W - 40, 88);
+      ctx.stroke();
+      const COLS = 2;
+      const cw = Math.min(520, (W - 60) / COLS);
+      const ch = 108;
+      const gap = 14;
+      const startX = (W - COLS * cw - (COLS - 1) * gap) / 2;
+      const startY = 104;
+      scenarios.forEach((sc, i) => {
+        const col = i % COLS;
+        const row = Math.floor(i / COLS);
+        const cx = startX + col * (cw + gap);
+        const cy = startY + row * (ch + gap);
+        const done = completedIds.has(sc.id);
+        const hov = this.mouseX >= cx && this.mouseX <= cx + cw && this.mouseY >= cy && this.mouseY <= cy + ch;
+        ctx.fillStyle = hov ? "rgba(0,100,140,0.25)" : "rgba(10,18,32,0.85)";
+        roundRect(ctx, cx, cy, cw, ch, 8);
+        ctx.fill();
+        ctx.strokeStyle = done ? "#00C8A0" : hov ? THEME.accent : THEME.panelBorder;
+        ctx.lineWidth = done ? 1.5 : 1;
+        roundRect(ctx, cx, cy, cw, ch, 8);
+        ctx.stroke();
+        ctx.font = "28px serif";
+        ctx.textAlign = "left";
+        ctx.fillText(sc.icon, cx + 14, cy + 44);
+        ctx.fillStyle = hov ? THEME.accent : THEME.text;
+        ctx.font = "bold 14px Courier New";
+        ctx.textAlign = "left";
+        ctx.fillText(sc.title, cx + 54, cy + 34);
+        ctx.fillStyle = THEME.textDim;
+        ctx.font = "11px Courier New";
+        ctx.fillText(sc.subtitle, cx + 54, cy + 52);
+        ctx.fillStyle = THEME.textDim;
+        ctx.font = "10px Courier New";
+        ctx.fillText(`${sc.steps.length} steps`, cx + 54, cy + 68);
+        if (done) {
+          ctx.fillStyle = "#00C8A0";
+          ctx.font = "bold 11px Courier New";
+          ctx.textAlign = "right";
+          ctx.fillText("\u2714 COMPLETE", cx + cw - 10, cy + 26);
+        }
+        const bw2 = 80, bh2 = 28;
+        const btnX = cx + cw - bw2 - 10, btnY = cy + ch - bh2 - 10;
+        const btnHov = hov && this.mouseX >= btnX && this.mouseX <= btnX + bw2 && this.mouseY >= btnY && this.mouseY <= btnY + bh2;
+        ctx.fillStyle = btnHov ? "rgba(0,180,220,0.35)" : "rgba(0,120,160,0.20)";
+        roundRect(ctx, btnX, btnY, bw2, bh2, 5);
+        ctx.fill();
+        ctx.strokeStyle = btnHov ? THEME.accent : THEME.accentDim;
+        ctx.lineWidth = 1;
+        roundRect(ctx, btnX, btnY, bw2, bh2, 5);
+        ctx.stroke();
+        ctx.fillStyle = btnHov ? THEME.accent : THEME.text;
+        ctx.font = "bold 11px Courier New";
+        ctx.textAlign = "center";
+        ctx.fillText(done ? "\u25B6 REPLAY" : "\u25B6 START", btnX + bw2 / 2, btnY + bh2 / 2 + 4);
+      });
+      const bk = { x: W / 2 - 90, y: H - 54, w: 180, h: 36, label: "\u2190 BACK", action: onBack };
+      drawButton(ctx, bk, isHit(bk, this.mouseX, this.mouseY));
+    }
+    handleTutorialSelectClick(mx, my, scenarios, onSelect, onBack) {
+      const { W, H } = this;
+      const COLS = 2;
+      const cw = Math.min(520, (W - 60) / COLS);
+      const ch = 108;
+      const gap = 14;
+      const startX = (W - COLS * cw - (COLS - 1) * gap) / 2;
+      const startY = 104;
+      for (let i = 0; i < scenarios.length; i++) {
+        const col = i % COLS;
+        const row = Math.floor(i / COLS);
+        const cx = startX + col * (cw + gap);
+        const cy = startY + row * (ch + gap);
+        if (mx >= cx && mx <= cx + cw && my >= cy && my <= cy + ch) {
+          onSelect(i);
+          return true;
+        }
+      }
+      const bk = { x: W / 2 - 90, y: H - 54, w: 180, h: 36, label: "", action: onBack };
+      if (isHit(bk, mx, my)) {
+        onBack();
+        return true;
+      }
+      return false;
+    }
+    // ─── Tutorial Overlay (drawn on top of any game screen) ──────────────────
+    renderTutorialOverlay(tm) {
+      if (!tm.isActive)
+        return;
+      const ctx = this.ctx;
+      const { W, H } = this;
+      if (tm.flashTimer > 0) {
+        const alpha = Math.min(1, tm.flashTimer / 0.4);
+        ctx.fillStyle = `rgba(0,160,100,${alpha * 0.88})`;
+        ctx.fillRect(0, 0, W, 50);
+        ctx.fillStyle = `rgba(0,255,160,${alpha})`;
+        ctx.font = "bold 16px Courier New";
+        ctx.textAlign = "center";
+        ctx.fillText(`\u2713  ${tm.flashTitle}`, W / 2, 30);
+        if (tm.scenarioDone) {
+          ctx.fillStyle = `rgba(0,255,160,${alpha * 0.7})`;
+          ctx.font = "12px Courier New";
+          ctx.fillText("Scenario Complete!  Click anywhere to continue.", W / 2, 46);
+        }
+        return;
+      }
+      if (tm.scenarioDone)
+        return;
+      const sc = tm.scenario;
+      const step = tm.step;
+      if (!sc || !step)
+        return;
+      const PW = Math.min(400, W * 0.42);
+      const px = 12;
+      const lineH = 16;
+      const bodyLines = this._wrapText(step.body, PW - 28, "12px Courier New");
+      const hintLines = step.hint ? this._wrapText(step.hint, PW - 28, "11px Courier New") : [];
+      const contentH = 26 + bodyLines.length * lineH + (hintLines.length > 0 ? 8 + hintLines.length * 14 : 0) + 22;
+      const PH = Math.max(100, contentH + 24);
+      const py = H - PH - 12;
+      ctx.fillStyle = "rgba(4,10,22,0.90)";
+      roundRect(ctx, px, py, PW, PH, 8);
+      ctx.fill();
+      ctx.strokeStyle = THEME.panelBorder;
+      ctx.lineWidth = 1;
+      roundRect(ctx, px, py, PW, PH, 8);
+      ctx.stroke();
+      const total = sc.steps.length;
+      const stepLabel = `Step ${tm.stepIdx + 1} / ${total}`;
+      ctx.fillStyle = THEME.accentDim;
+      ctx.font = "10px Courier New";
+      ctx.textAlign = "right";
+      ctx.fillText(stepLabel, px + PW - 10, py + 14);
+      ctx.fillStyle = THEME.textDim;
+      ctx.font = "10px Courier New";
+      ctx.textAlign = "left";
+      ctx.fillText(`${sc.icon}  ${sc.title}`, px + 10, py + 14);
+      const barW = PW - 20;
+      const barH = 2;
+      const barX = px + 10, barY = py + 20;
+      ctx.fillStyle = "rgba(0,80,120,0.5)";
+      ctx.fillRect(barX, barY, barW, barH);
+      ctx.fillStyle = THEME.accent;
+      ctx.fillRect(barX, barY, barW * (tm.stepIdx / total), barH);
+      ctx.fillStyle = THEME.accent;
+      ctx.font = "bold 13px Courier New";
+      ctx.textAlign = "left";
+      ctx.fillText(step.title, px + 10, py + 38);
+      ctx.fillStyle = THEME.text;
+      ctx.font = "12px Courier New";
+      let textY = py + 56;
+      for (const line of bodyLines) {
+        ctx.fillText(line, px + 10, textY);
+        textY += lineH;
+      }
+      if (hintLines.length > 0) {
+        textY += 6;
+        ctx.fillStyle = THEME.textDim;
+        ctx.font = "11px Courier New";
+        for (const line of hintLines) {
+          ctx.fillText(`\u2139  ${line}`, px + 10, textY);
+          textY += 14;
+        }
+      }
+      ctx.fillStyle = "rgba(100,140,180,0.4)";
+      ctx.font = "10px Courier New";
+      ctx.textAlign = "right";
+      ctx.fillText("[ Skip tutorial ]", px + PW - 10, py + PH - 8);
+    }
+    /** Returns true if the "skip tutorial" link was clicked. */
+    handleTutorialOverlayClick(mx, my, tm) {
+      if (!tm.isActive)
+        return false;
+      const { W, H } = this;
+      if (tm.flashTimer > 0 && tm.scenarioDone) {
+        return true;
+      }
+      const sc = tm.scenario;
+      const step = tm.step;
+      if (!sc || !step)
+        return false;
+      const PW = Math.min(400, W * 0.42);
+      const px = 12;
+      const lineH = 16;
+      const bodyLines = this._wrapText(step.body, PW - 28, "12px Courier New");
+      const hintLines = step.hint ? this._wrapText(step.hint, PW - 28, "11px Courier New") : [];
+      const contentH = 26 + bodyLines.length * lineH + (hintLines.length > 0 ? 8 + hintLines.length * 14 : 0) + 22;
+      const PH = Math.max(100, contentH + 24);
+      const py = H - PH - 12;
+      const skipX = px + PW - 120, skipY = py + PH - 20;
+      if (mx >= skipX && mx <= px + PW && my >= skipY && my <= py + PH) {
+        return true;
+      }
+      return false;
+    }
     // ─── Private Helpers ──────────────────────────────────────────────────────
+    /** Word-wrap `text` (with \n line breaks) into lines fitting `maxWidth`. */
+    _wrapText(text, maxWidth, font) {
+      const ctx = this.ctx;
+      const saved = ctx.font;
+      ctx.font = font;
+      const lines = [];
+      for (const para of text.split("\n")) {
+        const words = para.split(" ");
+        let current = "";
+        for (const word of words) {
+          const test = current ? `${current} ${word}` : word;
+          if (ctx.measureText(test).width > maxWidth && current) {
+            lines.push(current);
+            current = word;
+          } else {
+            current = test;
+          }
+        }
+        if (current)
+          lines.push(current);
+      }
+      ctx.font = saved;
+      return lines;
+    }
     _drawMenuStars(time) {
       const ctx = this.ctx;
       const { W, H } = this;
@@ -5135,6 +5608,341 @@
     }
   };
 
+  // src/Tutorial.ts
+  var G2 = 6674e-14;
+  var M_EARTH2 = 5972e21;
+  var R_EARTH2 = 6371e3;
+  function earthOrbit(ctx) {
+    const body = ctx.rocket.body;
+    const mu = G2 * M_EARTH2;
+    const r = Math.hypot(body.pos.x, body.pos.y);
+    const v2 = body.vel.x ** 2 + body.vel.y ** 2;
+    const eps = v2 / 2 - mu / r;
+    if (eps >= 0)
+      return { ap: Infinity, pe: r - R_EARTH2 };
+    const a = -mu / (2 * eps);
+    const h = body.pos.x * body.vel.y - body.pos.y * body.vel.x;
+    const e = Math.sqrt(Math.max(0, 1 - h * h / (mu * a)));
+    return {
+      ap: a * (1 + e) - R_EARTH2,
+      pe: a * (1 - e) - R_EARTH2
+    };
+  }
+  function hasPod(ctx) {
+    return ctx.rocket.parts.some(
+      (p) => p.def.type === 0 /* COMMAND_POD */ || p.def.type === 11 /* COMMAND_POD_ADV */
+    );
+  }
+  function hasTank(ctx) {
+    return ctx.rocket.parts.some((p) => p.def.maxFuelMass > 0);
+  }
+  function hasEngine(ctx) {
+    return ctx.rocket.parts.some((p) => isEnginePart(p.def.type));
+  }
+  function hasDecoupler(ctx) {
+    return ctx.rocket.parts.some((p) => isDecouplerPart(p.def.type));
+  }
+  function hasStagingSet(ctx) {
+    return ctx.rocket.parts.some((p) => isEnginePart(p.def.type) && p.stageIndex >= 0);
+  }
+  function tankCount(ctx) {
+    return ctx.rocket.parts.filter((p) => p.def.maxFuelMass > 0).length;
+  }
+  function inFlight(ctx) {
+    return ctx.screen === 4 /* FLIGHT */;
+  }
+  function inVAB(ctx) {
+    return ctx.screen === 2 /* VAB */ || ctx.screen === 3 /* STAGING */;
+  }
+  var TUTORIAL_SCENARIOS = [
+    // ── Scenario 1 ─────────────────────────────────────────────────────────────
+    {
+      id: "first_launch",
+      title: "First Launch",
+      subtitle: "Build and launch your very first rocket.",
+      icon: "\u{1F680}",
+      steps: [
+        {
+          title: "Welcome to Antigravity!",
+          body: "This tutorial walks you through your first rocket launch.\nFrom the main menu, click START GAME to open the Vehicle Assembly Building (VAB).",
+          check: (ctx) => ctx.screen !== 0 /* MAIN_MENU */ && ctx.screen !== 6 /* TUTORIAL_SELECT */
+        },
+        {
+          title: "Build Your Rocket",
+          body: "Click the Mk1 Command Pod in the parts list on the left, then click in the centre build area to place it.\nNext add an FL-T400 Fuel Tank below the pod, then an LV-T30 Booster engine at the bottom.",
+          hint: "Click a part to pick it up \u2014 a dashed line shows where it will snap to.",
+          check: (ctx) => inVAB(ctx) && hasPod(ctx) && hasTank(ctx) && hasEngine(ctx)
+        },
+        {
+          title: "Set Up Staging",
+          body: "Click STAGING in the right panel. Click the coloured badge next to your engine to assign it to Stage 0.\nOr just click AUTO-STAGE \u2014 it does it for you!",
+          hint: "Stage 0 fires first when you press SPACE during flight.",
+          check: (ctx) => hasStagingSet(ctx)
+        },
+        {
+          title: "Launch!",
+          body: "Click LAUNCH. Once on the pad:\n  W (or Shift)  \u2192 throttle up to full\n  SPACE         \u2192 activate Stage 0\nClimb to 1,000 m to complete this tutorial!",
+          hint: "Keep throttle at 100 % for maximum thrust off the pad.",
+          check: (ctx) => inFlight(ctx) && ctx.frame.altitude > 1e3
+        }
+      ]
+    },
+    // ── Scenario 2 ─────────────────────────────────────────────────────────────
+    {
+      id: "break_the_sky",
+      title: "Breaking the Sky",
+      subtitle: "Reach the K\xE1rm\xE1n Line \u2014 100 km altitude.",
+      icon: "\u{1F324}",
+      steps: [
+        {
+          title: "Build a Capable Rocket",
+          body: "You need more fuel this time. Add a Command Pod, at least 2 FL-T800 tanks, and an LV-T30 engine.\nCheck the stats panel on the right \u2014 aim for \u0394V > 5,000 m/s.",
+          hint: "Stacking tanks increases \u0394V. More tanks = more range.",
+          check: (ctx) => inVAB(ctx) && tankCount(ctx) >= 2 && hasEngine(ctx)
+        },
+        {
+          title: "Lift Off!",
+          body: "Launch and climb straight up to 1 km with throttle fully open (W key).",
+          check: (ctx) => inFlight(ctx) && ctx.frame.altitude > 1e3
+        },
+        {
+          title: "Gravity Turn",
+          body: "At 1 km start tilting east \u2014 press D (or Right Arrow) and hold it for a few seconds.\nA gravity turn saves huge amounts of fuel vs flying straight up.",
+          hint: "Aim for about 45\xB0 from vertical by the time you hit 10 km.",
+          check: (ctx) => inFlight(ctx) && ctx.frame.altitude > 3e4
+        },
+        {
+          title: "Reach the K\xE1rm\xE1n Line",
+          body: "Keep burning! Stage when fuel runs out (SPACE key).\nThe atmosphere ends at 70 km \u2014 reach 100 km to complete this scenario.",
+          hint: "If you run short of fuel, add more tanks or a second stage next time.",
+          check: (ctx) => inFlight(ctx) && ctx.frame.altitude > 1e5
+        }
+      ]
+    },
+    // ── Scenario 3 ─────────────────────────────────────────────────────────────
+    {
+      id: "orbit_earth",
+      title: "Orbit the Earth",
+      subtitle: "Achieve a stable orbit above 70 km.",
+      icon: "\u{1F30D}",
+      steps: [
+        {
+          title: "Build an Orbital Rocket",
+          body: "You need two stages and ~9,000 m/s total \u0394V.\nSuggested build: Pod / FL-T800 / LV-909 / Decoupler / FL-T800 \xD7 2 / LV-T30.\nA booster (LV-T30) is required to lift off \u2014 the Terrier cannot launch from the pad.",
+          hint: "Check the VAB stats: \u0394V > 7,500 m/s AND launch TWR > 1.2 required.",
+          check: (ctx) => {
+            if (inVAB(ctx)) {
+              const totalMass = ctx.rocket.getTotalMass();
+              const slThrust = ctx.rocket.parts.filter((p) => isEnginePart(p.def.type)).reduce((s, p) => s + p.def.maxThrust * p.def.thrustSL, 0);
+              const launchTWR = totalMass > 0 ? slThrust / (totalMass * 9.81) : 0;
+              return ctx.rocket.getDeltaV() > 7500 && launchTWR > 1.2 && hasDecoupler(ctx);
+            }
+            return inFlight(ctx);
+          }
+        },
+        {
+          title: "Gravity Turn and Climb",
+          body: "After launch, pitch east at ~1 km and follow a shallow arc.\nKeep throttle at 100 % and aim to be nearly horizontal (>80\xB0) by 60 km.",
+          check: (ctx) => inFlight(ctx) && ctx.frame.altitude > 2e4
+        },
+        {
+          title: "Push Apoapsis Above 80 km",
+          body: "Keep burning until your apoapsis (Ap) is above 80 km, then cut engines and coast.\nPress M to open the map view \u2014 it shows your predicted orbit arc.",
+          hint: "Cut engines as soon as Ap reaches your target; burning further wastes fuel.",
+          check: (ctx) => {
+            if (!inFlight(ctx))
+              return false;
+            return earthOrbit(ctx).ap > 8e4;
+          }
+        },
+        {
+          title: "Coast to Apoapsis",
+          body: "Engines off \u2014 coast up to your highest point.\nUse time warp [ / ] keys to speed up the wait.",
+          check: (ctx) => inFlight(ctx) && ctx.frame.altitude > 7e4 && Math.abs(ctx.frame.verticalSpeed) < 600
+        },
+        {
+          title: "Circularise!",
+          body: "At apoapsis, point prograde (nose in your direction of travel) and burn.\nStop when your periapsis (Pe) is above 70 km \u2014 you are in orbit!",
+          hint: "Prograde = the direction your rocket is already moving horizontally.",
+          check: (ctx) => {
+            if (!inFlight(ctx))
+              return false;
+            const { pe } = earthOrbit(ctx);
+            return pe > 65e3 && ctx.frame.altitude > 65e3;
+          }
+        }
+      ]
+    },
+    // ── Scenario 4 ─────────────────────────────────────────────────────────────
+    {
+      id: "to_the_moon",
+      title: "To the Moon",
+      subtitle: "Leave Earth orbit and enter lunar space.",
+      icon: "\u{1F315}",
+      steps: [
+        {
+          title: "Achieve Earth Orbit First",
+          body: "Get into a stable orbit above 70 km before heading to the Moon.\nYou also need spare \u0394V for the Trans-Lunar Injection burn (~3,200 m/s).",
+          hint: "Use an LV-1 Condor or LV-N Nerva upper stage for the best efficiency in space.",
+          check: (ctx) => {
+            if (!inFlight(ctx))
+              return false;
+            return earthOrbit(ctx).pe > 65e3;
+          }
+        },
+        {
+          title: "Plan a Trans-Lunar Injection (TLI)",
+          body: "Open the map (M) and watch the Moon's position.\nWhen the Moon is about 60\xB0 ahead in its orbit, burn prograde until your Ap reaches ~384,000 km.",
+          hint: "Time warp is your friend here \u2014 press ] to speed up to \xD71,000 or more.",
+          check: (ctx) => {
+            if (!inFlight(ctx))
+              return false;
+            return earthOrbit(ctx).ap > 3e8 || ctx.frame.inMoonSOI;
+          }
+        },
+        {
+          title: "Coast to the Moon",
+          body: `The journey takes days of in-game time \u2014 crank up the time warp.
+You'll know you've arrived when the HUD shows "ALT \u263D".`,
+          hint: "High time warp (\xD710,000) covers the 3-day trip quickly. Watch the map!",
+          check: (ctx) => ctx.frame.inMoonSOI
+        },
+        {
+          title: "You Reached the Moon!",
+          body: "You are now inside the Moon's sphere of influence.\nTo stay in lunar orbit, burn retrograde at closest approach to slow down (LOI burn).",
+          hint: "Without slowing down you'll swing around the Moon and drift back toward Earth.",
+          check: (ctx) => ctx.frame.inMoonSOI && ctx.frame.altAboveNearest < 5e5
+        }
+      ]
+    },
+    // ── Scenario 5 ─────────────────────────────────────────────────────────────
+    {
+      id: "lunar_landing",
+      title: "Lunar Landing",
+      subtitle: "Land a rocket on the surface of the Moon.",
+      icon: "\u{1F311}",
+      steps: [
+        {
+          title: "Enter Lunar Orbit",
+          body: "Arrive at the Moon and slow down to be captured in orbit below 50 km.\nBurn retrograde at your closest approach to circularise.",
+          check: (ctx) => {
+            if (!inFlight(ctx) || !ctx.frame.inMoonSOI)
+              return false;
+            const { pe } = earthOrbit(ctx);
+            return ctx.frame.altAboveNearest < 8e4 && ctx.frame.speed < 2500;
+          }
+        },
+        {
+          title: "Deorbit Burn",
+          body: "Burn retrograde to lower your periapsis until it intersects the lunar surface.\nA short -20 m/s burn is enough to start descending.",
+          hint: "Use the map view to see your updated trajectory after the burn.",
+          check: (ctx) => inFlight(ctx) && ctx.frame.inMoonSOI && ctx.frame.altAboveNearest < 1e4
+        },
+        {
+          title: "Powered Descent",
+          body: "Slow your descent by burning retrograde (engines pointing toward your direction of travel).\nAim to arrive at the surface with less than 10 m/s vertical speed.",
+          hint: "The Moon has no atmosphere \u2014 your engines are the only brake. Manage fuel carefully!",
+          check: (ctx) => inFlight(ctx) && ctx.frame.inMoonSOI && ctx.frame.altAboveNearest < 300
+        },
+        {
+          title: "Touchdown!",
+          body: "Land safely on the Moon. Under 8 m/s impact speed is considered a safe landing.",
+          hint: "Kill horizontal speed first, then descend slowly. Throttle down just before impact.",
+          check: (ctx) => inFlight(ctx) && ctx.frame.inMoonSOI && ctx.frame.altAboveNearest < 30 && ctx.frame.speed < 8
+        }
+      ]
+    },
+    // ── Scenario 6 ─────────────────────────────────────────────────────────────
+    {
+      id: "return_to_earth",
+      title: "Return to Earth",
+      subtitle: "Launch from the Moon and survive reentry.",
+      icon: "\u{1F320}",
+      steps: [
+        {
+          title: "Lift Off from the Moon",
+          body: "Launch from the lunar surface and achieve enough speed to escape the Moon's gravity.\nLunar escape velocity is ~2.4 km/s \u2014 point prograde and burn.",
+          check: (ctx) => ctx.frame.inMoonSOI && ctx.frame.altAboveNearest > 5e3
+        },
+        {
+          title: "Trans-Earth Injection",
+          body: "Once in lunar orbit, burn prograde to set your trajectory back toward Earth.\nYour perigee should drop below 50 km to enter the atmosphere.",
+          hint: "About 900 m/s of \u0394V escapes the Moon. Use the map view to verify your path.",
+          check: (ctx) => !ctx.frame.inMoonSOI && ctx.frame.altitude < 4e8
+        },
+        {
+          title: "Reentry",
+          body: "You'll hit Earth's atmosphere at ~11 km/s \u2014 intense heating ahead!\nMake sure your heat shield is pointing retrograde (in the direction of travel).",
+          hint: "Watch the plasma effect \u2014 beautiful but deadly without a proper heat shield.",
+          check: (ctx) => !ctx.frame.inMoonSOI && ctx.frame.altitude < 8e4 && ctx.frame.speed > 4e3
+        },
+        {
+          title: "Splashdown!",
+          body: "Survive reentry and land safely on Earth.\nBelow 10 km the worst heat is behind you \u2014 slow to below 50 m/s.",
+          hint: "Heat shields deplete on use. Make sure yours isn't destroyed before reentry!",
+          check: (ctx) => !ctx.frame.inMoonSOI && ctx.frame.altitude < 200 && ctx.frame.speed < 80
+        }
+      ]
+    }
+  ];
+  var TutorialManager = class {
+    constructor() {
+      this.scenarioIdx = -1;
+      this.stepIdx = 0;
+      this.isActive = false;
+      this.scenarioDone = false;
+      /** Counts down after a step completes — UI shows "✓" flash while > 0 */
+      this.flashTimer = 0;
+      /** Title of the last completed step, shown in the flash banner */
+      this.flashTitle = "";
+      /** Which scenario IDs have been fully completed this session */
+      this.completedIds = /* @__PURE__ */ new Set();
+    }
+    start(idx) {
+      this.scenarioIdx = Math.max(0, Math.min(idx, TUTORIAL_SCENARIOS.length - 1));
+      this.stepIdx = 0;
+      this.isActive = true;
+      this.scenarioDone = false;
+      this.flashTimer = 0;
+      this.flashTitle = "";
+    }
+    stop() {
+      this.isActive = false;
+      this.flashTimer = 0;
+    }
+    get scenario() {
+      return this.isActive ? TUTORIAL_SCENARIOS[this.scenarioIdx] ?? null : null;
+    }
+    get step() {
+      const s = this.scenario;
+      return s ? s.steps[this.stepIdx] ?? null : null;
+    }
+    /** Call once per frame.  Advances step when check() passes. */
+    tick(ctx, dt) {
+      if (!this.isActive)
+        return;
+      if (this.flashTimer > 0) {
+        this.flashTimer = Math.max(0, this.flashTimer - dt);
+        return;
+      }
+      if (this.scenarioDone)
+        return;
+      const step = this.step;
+      if (!step)
+        return;
+      if (step.check(ctx)) {
+        this.flashTitle = step.title;
+        this.flashTimer = 1.8;
+        this.stepIdx++;
+        const sc = this.scenario;
+        if (this.stepIdx >= sc.steps.length) {
+          this.scenarioDone = true;
+          this.completedIds.add(sc.id);
+        }
+      }
+    }
+  };
+
   // src/Game.ts
   var PHYSICS_DT = 1 / 60;
   var MAX_PHYSICS_STEPS = 4;
@@ -5154,6 +5962,12 @@
       this.wallTime = 0;
       /** Show force-vector debug overlay during flight */
       this.advancedDebug = false;
+      /** True while the in-flight pause menu is visible */
+      this.isPaused = false;
+      /** True when OPTIONS was opened from the pause menu (back returns to flight, not main menu) */
+      this._fromPausedFlight = false;
+      /** Tutorial system — manages active scenario and step progression */
+      this.tutorial = new TutorialManager();
       /** Input state flags */
       this.input = {
         throttleUp: false,
@@ -5230,8 +6044,24 @@
         case 4 /* FLIGHT */:
           this._updateFlight(rawDt);
           break;
+        case 6 /* TUTORIAL_SELECT */:
+          this._updateTutorialSelect();
+          break;
         default:
           break;
+      }
+      if (this.tutorial.isActive) {
+        const tutCtx = {
+          screen: this.screen,
+          frame: this.physics.lastFrame,
+          rocket: this.rocket,
+          throttle: this.throttle,
+          missionTime: this.physics.missionTime
+        };
+        this.tutorial.tick(tutCtx, rawDt);
+        if (this.screen !== 0 /* MAIN_MENU */ && this.screen !== 6 /* TUTORIAL_SELECT */) {
+          this.ui.renderTutorialOverlay(this.tutorial);
+        }
       }
       if (this.showMessage && this.messageAction) {
         this.ui.renderMessage(this.messageTitle, this.messageBody, this.messageBtn, this.messageAction);
@@ -5244,13 +6074,29 @@
       this.ui.renderMainMenu(
         this.wallTime,
         () => this._switchTo(2 /* VAB */),
+        () => this._switchTo(6 /* TUTORIAL_SELECT */),
         () => this._switchTo(1 /* OPTIONS */),
         () => {
         }
       );
     }
+    _updateTutorialSelect() {
+      this.ui.renderTutorialSelect(
+        TUTORIAL_SCENARIOS,
+        this.tutorial.completedIds,
+        (idx) => {
+          this.tutorial.start(idx);
+          this._switchTo(2 /* VAB */);
+        },
+        () => this._switchTo(0 /* MAIN_MENU */)
+      );
+    }
     _updateOptions() {
-      this.ui.renderOptions(this.advancedDebug, () => this._switchTo(0 /* MAIN_MENU */));
+      const onBack = this._fromPausedFlight ? () => {
+        this._fromPausedFlight = false;
+        this._switchTo(4 /* FLIGHT */);
+      } : () => this._switchTo(0 /* MAIN_MENU */);
+      this.ui.renderOptions(this.advancedDebug, onBack);
     }
     _updateVAB() {
       this.ui.renderVAB(
@@ -5271,7 +6117,8 @@
     _updateFlight(rawDt) {
       const warpFactor = this.WARP_LEVELS[this.warpIndex];
       const highWarp = warpFactor >= 100;
-      if (highWarp) {
+      if (this.isPaused) {
+      } else if (highWarp) {
         this.rocket.throttle = 0;
         this.throttle = 0;
         this.rocket.body.mass = this.rocket.getTotalMass();
@@ -5297,16 +6144,18 @@
           this.accumulator = 0;
         }
       }
-      if (this.cheatUnlimFuel) {
-        for (const part of this.rocket.parts) {
-          if (part.def.maxFuelMass > 0) {
-            part.fuelRemaining = part.def.maxFuelMass;
+      if (!this.isPaused) {
+        if (this.cheatUnlimFuel) {
+          for (const part of this.rocket.parts) {
+            if (part.def.maxFuelMass > 0) {
+              part.fuelRemaining = part.def.maxFuelMass;
+            }
           }
+          this.rocket.body.mass = this.rocket.getTotalMass();
         }
-        this.rocket.body.mass = this.rocket.getTotalMass();
+        this.mapView.tick(this.rocket, this.physics.missionTime);
+        this._checkFlightEvents();
       }
-      this.mapView.tick(this.rocket, this.physics.missionTime);
-      this._checkFlightEvents();
       const frame = this.physics.lastFrame;
       if (this.isMapOpen) {
         this.renderer.renderFlight(this.rocket, frame, this.throttle, this.physics.missionTime, this.advancedDebug);
@@ -5325,10 +6174,35 @@
         );
         this.renderer.renderBurnGuidance(this.rocket, this.mapView.node, this.physics.missionTime, this.mapView.dvRemaining);
       }
+      if (this.isPaused && !this.isMapOpen) {
+        this.ui.renderPauseMenu(
+          () => {
+            this.isPaused = false;
+          },
+          () => {
+            this._fromPausedFlight = true;
+            this._switchTo(1 /* OPTIONS */);
+          },
+          () => {
+            this.isPaused = false;
+            this._switchTo(0 /* MAIN_MENU */);
+          }
+        );
+      }
     }
     // ─── Input Processing ──────────────────────────────────────────────────────
     _processInput(dt) {
       if (this.screen !== 4 /* FLIGHT */)
+        return;
+      if (this.escPressed) {
+        this.escPressed = false;
+        if (this.isMapOpen) {
+          this.isMapOpen = false;
+        } else {
+          this.isPaused = !this.isPaused;
+        }
+      }
+      if (this.isPaused)
         return;
       if (this.input.throttleUp)
         this.throttle = Math.min(1, this.throttle + THROTTLE_RATE * dt);
@@ -5421,14 +6295,6 @@
         if (this.isMapOpen)
           this.mapView.resetView();
       }
-      if (this.escPressed) {
-        this.escPressed = false;
-        if (this.isMapOpen) {
-          this.isMapOpen = false;
-        } else {
-          this._switchTo(0 /* MAIN_MENU */);
-        }
-      }
     }
     // ─── Flight Events ─────────────────────────────────────────────────────────
     _checkFlightEvents() {
@@ -5492,6 +6358,8 @@
       this.accumulator = 0;
       this.showMessage = false;
       this.warpIndex = 0;
+      this.isPaused = false;
+      this._fromPausedFlight = false;
       this._switchTo(4 /* FLIGHT */);
     }
     // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -5640,22 +6508,52 @@
           this.ui.handleMessageClick(mx, my, this.messageAction);
           return;
         }
+        if (this.tutorial.isActive && this.screen !== 0 /* MAIN_MENU */ && this.screen !== 6 /* TUTORIAL_SELECT */) {
+          const acted = this.ui.handleTutorialOverlayClick(mx, my, this.tutorial);
+          if (acted) {
+            if (this.tutorial.scenarioDone) {
+              this.tutorial.stop();
+              this._switchTo(6 /* TUTORIAL_SELECT */);
+            } else {
+              this.tutorial.stop();
+            }
+            return;
+          }
+        }
         switch (this.screen) {
           case 0 /* MAIN_MENU */:
             this.ui.handleMainMenuClick(
               mx,
               my,
               () => this._switchTo(2 /* VAB */),
+              () => this._switchTo(6 /* TUTORIAL_SELECT */),
               () => this._switchTo(1 /* OPTIONS */),
               () => {
               }
             );
             break;
-          case 1 /* OPTIONS */:
-            this.ui.handleOptionsClick(mx, my, () => this._switchTo(0 /* MAIN_MENU */), (v) => {
+          case 6 /* TUTORIAL_SELECT */:
+            this.ui.handleTutorialSelectClick(
+              mx,
+              my,
+              TUTORIAL_SCENARIOS,
+              (idx) => {
+                this.tutorial.start(idx);
+                this._switchTo(2 /* VAB */);
+              },
+              () => this._switchTo(0 /* MAIN_MENU */)
+            );
+            break;
+          case 1 /* OPTIONS */: {
+            const optBack = this._fromPausedFlight ? () => {
+              this._fromPausedFlight = false;
+              this._switchTo(4 /* FLIGHT */);
+            } : () => this._switchTo(0 /* MAIN_MENU */);
+            this.ui.handleOptionsClick(mx, my, optBack, (v) => {
               this.advancedDebug = v;
             }, this.advancedDebug);
             break;
+          }
           case 2 /* VAB */:
             this.ui.handleVABClick(
               mx,
@@ -5676,7 +6574,23 @@
             );
             break;
           case 4 /* FLIGHT */:
-            if (this.isMapOpen) {
+            if (this.isPaused && !this.isMapOpen) {
+              this.ui.handlePauseClick(
+                mx,
+                my,
+                () => {
+                  this.isPaused = false;
+                },
+                () => {
+                  this._fromPausedFlight = true;
+                  this._switchTo(1 /* OPTIONS */);
+                },
+                () => {
+                  this.isPaused = false;
+                  this._switchTo(0 /* MAIN_MENU */);
+                }
+              );
+            } else if (this.isMapOpen) {
               this.mapView.handleClick(mx, my);
             } else {
               const wd = this.renderer.warpDownBtn;

@@ -383,25 +383,105 @@ export class Rocket {
   // ─── Delta-V Budget ─────────────────────────────────────────────────────────
 
   /**
-   * Compute total remaining ΔV using the Tsiolkovsky rocket equation:
-   *   ΔV = Isp · g₀ · ln(m₀ / m_dry)
-   * Summed across all remaining stages.
+   * Compute total ΔV using a staged Tsiolkovsky calculation.
+   *
+   * Staged decouplers divide the rocket into sections (bottom → top).
+   * Each section's fuel is burned by the engines in that section.
+   * If a section has no engine, the nearest engine above it is used
+   * (drop-tank configuration).  After each section burns out the
+   * decoupler fires and that dead mass is jettisoned, improving the
+   * mass ratio for subsequent sections.
+   *
+   * Falls back to a single-stage calculation when there are no staged
+   * decouplers (the result is identical to the Tsiolkovsky equation
+   * applied to the whole rocket).
    */
   getDeltaV(): number {
-    // Use all engine parts (not just thrusting) so VAB shows correct ΔV.
-    const engines = this.parts.filter(p => isEnginePart(p.def.type));
-    if (engines.length === 0) return 0;
+    if (this.parts.length === 0) return 0;
 
-    const totalThrust  = engines.reduce((s, p) => s + p.def.maxThrust, 0);
-    const weightedIsp  = engines.reduce((s, p) => s + p.def.maxThrust * p.def.isp, 0);
-    const isp          = totalThrust > 0 ? weightedIsp / totalThrust : 0;
-    if (isp <= 0) return 0;
+    const allEngines = this.parts.filter(p => isEnginePart(p.def.type));
+    if (allEngines.length === 0) return 0;
 
-    const m0    = this.getTotalMass();
-    const m_dry = this.parts.reduce((s, p) => s + p.def.dryMass, 0);
+    // Build a lightweight snapshot; use def values so in-flight partial
+    // fuel doesn't distort the VAB display.
+    const snap = this.parts.map(p => ({
+      slot:        p.slotIndex,
+      dryMass:     p.def.dryMass,
+      fuelMass:    p.fuelRemaining,   // current remaining fuel (works for both VAB and flight)
+      isEngine:    isEnginePart(p.def.type),
+      isDecoupler: isDecouplerPart(p.def.type),
+      stageIndex:  p.stageIndex,
+      maxThrust:   p.def.maxThrust,
+      isp:         p.def.isp,
+    }));
 
-    if (m_dry <= 0 || m0 <= m_dry) return 0;
-    return isp * G0 * Math.log(m0 / m_dry);
+    // Staged decouplers define section boundaries (bottom-first).
+    const decouplers = snap
+      .filter(p => p.isDecoupler && p.stageIndex >= 0)
+      .sort((a, b) => a.slot - b.slot);
+
+    // No decouplers → single-stage fallback
+    if (decouplers.length === 0) {
+      const thrust = allEngines.reduce((s, p) => s + p.def.maxThrust, 0);
+      const isp    = thrust > 0
+        ? allEngines.reduce((s, p) => s + p.def.maxThrust * p.def.isp, 0) / thrust
+        : 0;
+      if (isp <= 0) return 0;
+      const m0   = snap.reduce((s, p) => s + p.dryMass + p.fuelMass, 0);
+      const mdry = snap.reduce((s, p) => s + p.dryMass, 0);
+      return m0 > mdry ? isp * G0 * Math.log(m0 / mdry) : 0;
+    }
+
+    let pool   = [...snap];
+    let totalDV = 0;
+
+    // ── Process each decoupler section (bottom section first) ─────────────
+    for (const dec of decouplers) {
+      const currentMass = pool.reduce((s, p) => s + p.dryMass + p.fuelMass, 0);
+      if (currentMass <= 0) break;
+
+      const section     = pool.filter(p => p.slot <= dec.slot);
+      const sectionFuel = section.reduce((s, p) => s + p.fuelMass, 0);
+
+      if (sectionFuel > 0) {
+        // Engines in this section, OR the nearest engine above it (drop-tank).
+        let burners = section.filter(p => p.isEngine);
+        if (burners.length === 0) {
+          const aboveEngine = pool
+            .filter(p => p.slot > dec.slot && p.isEngine)
+            .sort((a, b) => a.slot - b.slot)[0];
+          if (aboveEngine) burners = [aboveEngine];
+        }
+
+        if (burners.length > 0) {
+          const thrust = burners.reduce((s, p) => s + p.maxThrust, 0);
+          const isp    = thrust > 0
+            ? burners.reduce((s, p) => s + p.maxThrust * p.isp, 0) / thrust
+            : 0;
+          if (isp > 0) {
+            const mBurnout = currentMass - sectionFuel;
+            if (mBurnout > 0) totalDV += isp * G0 * Math.log(currentMass / mBurnout);
+          }
+        }
+      }
+
+      // Jettison everything at and below the decoupler.
+      pool = pool.filter(p => p.slot > dec.slot);
+    }
+
+    // ── Final section (above all decouplers) ─────────────────────────────
+    const finalMass = pool.reduce((s, p) => s + p.dryMass + p.fuelMass, 0);
+    const finalDry  = pool.reduce((s, p) => s + p.dryMass, 0);
+    const finalEng  = pool.filter(p => p.isEngine);
+    if (finalEng.length > 0 && finalMass > finalDry) {
+      const thrust = finalEng.reduce((s, p) => s + p.maxThrust, 0);
+      const isp    = thrust > 0
+        ? finalEng.reduce((s, p) => s + p.maxThrust * p.isp, 0) / thrust
+        : 0;
+      if (isp > 0) totalDV += isp * G0 * Math.log(finalMass / finalDry);
+    }
+
+    return totalDV;
   }
 
   /**

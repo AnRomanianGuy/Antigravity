@@ -4,7 +4,7 @@ A lightweight 2D rocket simulator that runs in the browser. Build a rocket, laun
 
 Inspired by the physics of real spaceflight — gravity, thrust, atmospheric drag, and reentry heating are all modeled.
 
-Current version dev:d0.3.7
+Current version dev:d0.3.9
 
 Current version main:m0.2.1
 

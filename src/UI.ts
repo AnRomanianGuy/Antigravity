@@ -15,6 +15,7 @@ import { THEME, PartType } from './types';
 import { PART_CATALOGUE, VAB_PALETTE, isEnginePart, isDecouplerPart } from './Part';
 import { Rocket } from './Rocket';
 import { Renderer } from './Renderer';
+import { TutorialManager, TutorialScenario } from './Tutorial';
 
 // ─── Button Helper ────────────────────────────────────────────────────────────
 
@@ -146,7 +147,7 @@ export class UI {
 
   // ─── Main Menu ─────────────────────────────────────────────────────────────
 
-  renderMainMenu(time: number, onStart: () => void, onOptions: () => void, onExit: () => void): void {
+  renderMainMenu(time: number, onStart: () => void, onTutorial: () => void, onOptions: () => void, onExit: () => void): void {
     const ctx = this.ctx;
     const { W, H } = this;
 
@@ -186,13 +187,14 @@ export class UI {
     // Buttons
     const bw = 220, bh = 44;
     const bx = W / 2 - bw / 2;
-    const gap = 16;
-    const by0 = H * 0.50;
+    const gap = 12;
+    const by0 = H * 0.47;
 
     const buttons: Button[] = [
-      { x: bx, y: by0,            w: bw, h: bh, label: '▶  START GAME',  action: onStart,   accent: true },
-      { x: bx, y: by0 + bh + gap, w: bw, h: bh, label: '⚙  OPTIONS',     action: onOptions },
-      { x: bx, y: by0 + (bh + gap) * 2, w: bw, h: bh, label: '✕  EXIT',  action: onExit },
+      { x: bx, y: by0,                  w: bw, h: bh, label: '▶  START GAME', action: onStart,   accent: true },
+      { x: bx, y: by0 + (bh + gap),     w: bw, h: bh, label: '📖  TUTORIAL',  action: onTutorial },
+      { x: bx, y: by0 + (bh + gap) * 2, w: bw, h: bh, label: '⚙  OPTIONS',   action: onOptions },
+      { x: bx, y: by0 + (bh + gap) * 3, w: bw, h: bh, label: '✕  EXIT',      action: onExit },
     ];
 
     for (const btn of buttons) {
@@ -220,17 +222,18 @@ export class UI {
   }
 
   /** Handle click on main menu. Returns true if a button was hit. */
-  handleMainMenuClick(mx: number, my: number, onStart: () => void, onOptions: () => void, onExit: () => void): boolean {
+  handleMainMenuClick(mx: number, my: number, onStart: () => void, onTutorial: () => void, onOptions: () => void, onExit: () => void): boolean {
     const { W, H } = this;
     const bw = 220, bh = 44;
     const bx = W / 2 - bw / 2;
-    const gap = 16;
-    const by0 = H * 0.50;
+    const gap = 12;
+    const by0 = H * 0.47;
 
     const buttons: Button[] = [
-      { x: bx, y: by0,            w: bw, h: bh, label: '▶  START GAME',  action: onStart,   accent: true },
-      { x: bx, y: by0 + bh + gap, w: bw, h: bh, label: '⚙  OPTIONS',     action: onOptions },
-      { x: bx, y: by0 + (bh + gap) * 2, w: bw, h: bh, label: '✕  EXIT', action: onExit },
+      { x: bx, y: by0,                  w: bw, h: bh, label: '▶  START GAME', action: onStart,   accent: true },
+      { x: bx, y: by0 + (bh + gap),     w: bw, h: bh, label: '📖  TUTORIAL',  action: onTutorial },
+      { x: bx, y: by0 + (bh + gap) * 2, w: bw, h: bh, label: '⚙  OPTIONS',   action: onOptions },
+      { x: bx, y: by0 + (bh + gap) * 3, w: bw, h: bh, label: '✕  EXIT',      action: onExit },
     ];
 
     for (const btn of buttons) {
@@ -984,7 +987,401 @@ export class UI {
     return false;
   }
 
+  // ─── Pause Overlay ────────────────────────────────────────────────────────
+
+  renderPauseMenu(onResume: () => void, onOptions: () => void, onMainMenu: () => void): void {
+    const ctx = this.ctx;
+    const { W, H } = this;
+
+    // Dimmed overlay — draws on top of the frozen flight scene
+    ctx.fillStyle = 'rgba(0,5,18,0.62)';
+    ctx.fillRect(0, 0, W, H);
+
+    // Soft vignette ring so the panel area feels lighter
+    const vig = ctx.createRadialGradient(W / 2, H / 2, H * 0.15, W / 2, H / 2, H * 0.75);
+    vig.addColorStop(0, 'rgba(0,0,0,0)');
+    vig.addColorStop(1, 'rgba(0,0,10,0.45)');
+    ctx.fillStyle = vig;
+    ctx.fillRect(0, 0, W, H);
+
+    // Panel
+    const pw = 340, ph2 = 268;
+    const px = (W - pw) / 2, py = (H - ph2) / 2;
+
+    ctx.fillStyle = 'rgba(6,12,26,0.97)';
+    roundRect(ctx, px, py, pw, ph2, 12);
+    ctx.fill();
+    ctx.strokeStyle = THEME.accent;
+    ctx.lineWidth = 1.5;
+    roundRect(ctx, px, py, pw, ph2, 12);
+    ctx.stroke();
+
+    // Glow title
+    ctx.save();
+    ctx.shadowColor = THEME.accent;
+    ctx.shadowBlur = 20;
+    ctx.fillStyle = THEME.accent;
+    ctx.font = 'bold 26px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText('PAUSED', W / 2, py + 46);
+    ctx.restore();
+
+    // Separator
+    ctx.strokeStyle = `${THEME.panelBorder}`;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(px + 24, py + 60);
+    ctx.lineTo(px + pw - 24, py + 60);
+    ctx.stroke();
+
+    // Buttons
+    const bw = 260, bh = 44, bx2 = (W - bw) / 2;
+    const gap = 10;
+    const by0 = py + 76;
+
+    const buttons: Button[] = [
+      { x: bx2, y: by0,                 w: bw, h: bh, label: '▶  RESUME',            action: onResume,   accent: true },
+      { x: bx2, y: by0 + bh + gap,      w: bw, h: bh, label: '⚙  OPTIONS',           action: onOptions },
+      { x: bx2, y: by0 + (bh + gap) * 2, w: bw, h: bh, label: '✕  BACK TO MAIN MENU', action: onMainMenu },
+    ];
+
+    for (const btn of buttons) {
+      drawButton(ctx, btn, isHit(btn, this.mouseX, this.mouseY));
+    }
+
+    // Footer hint
+    ctx.fillStyle = 'rgba(100,140,180,0.45)';
+    ctx.font = '11px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText('ESC to resume', W / 2, py + ph2 - 13);
+  }
+
+  handlePauseClick(mx: number, my: number, onResume: () => void, onOptions: () => void, onMainMenu: () => void): boolean {
+    const { W, H } = this;
+    const bw = 260, bh = 44, bx2 = (W - bw) / 2;
+    const gap = 10;
+    const ph2 = 268;
+    const py = (H - ph2) / 2;
+    const by0 = py + 76;
+
+    const buttons: Button[] = [
+      { x: bx2, y: by0,                  w: bw, h: bh, label: '', action: onResume },
+      { x: bx2, y: by0 + bh + gap,       w: bw, h: bh, label: '', action: onOptions },
+      { x: bx2, y: by0 + (bh + gap) * 2, w: bw, h: bh, label: '', action: onMainMenu },
+    ];
+
+    for (const btn of buttons) {
+      if (isHit(btn, mx, my)) { btn.action(); return true; }
+    }
+    return false;
+  }
+
+  // ─── Tutorial Select Screen ──────────────────────────────────────────────
+
+  renderTutorialSelect(
+    scenarios: TutorialScenario[],
+    completedIds: Set<string>,
+    onSelect: (idx: number) => void,
+    onBack:   () => void,
+  ): void {
+    const ctx = this.ctx;
+    const { W, H } = this;
+
+    ctx.fillStyle = THEME.bg;
+    ctx.fillRect(0, 0, W, H);
+    this._drawMenuStars(0);
+
+    ctx.save();
+    ctx.shadowColor = THEME.accent;
+    ctx.shadowBlur  = 16;
+    ctx.fillStyle   = THEME.accent;
+    ctx.font        = 'bold 26px Courier New';
+    ctx.textAlign   = 'center';
+    ctx.fillText('TUTORIAL MISSIONS', W / 2, 52);
+    ctx.restore();
+
+    ctx.fillStyle = THEME.textDim;
+    ctx.font      = '12px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText('Complete scenarios in order to master rocket science.', W / 2, 76);
+
+    ctx.strokeStyle = THEME.panelBorder;
+    ctx.lineWidth   = 1;
+    ctx.beginPath(); ctx.moveTo(40, 88); ctx.lineTo(W - 40, 88); ctx.stroke();
+
+    // Scenario cards — two columns
+    const COLS   = 2;
+    const cw     = Math.min(520, (W - 60) / COLS);
+    const ch     = 108;
+    const gap    = 14;
+    const startX = (W - COLS * cw - (COLS - 1) * gap) / 2;
+    const startY = 104;
+
+    scenarios.forEach((sc, i) => {
+      const col  = i % COLS;
+      const row  = Math.floor(i / COLS);
+      const cx   = startX + col * (cw + gap);
+      const cy   = startY + row * (ch + gap);
+      const done = completedIds.has(sc.id);
+      const hov  = this.mouseX >= cx && this.mouseX <= cx + cw
+                && this.mouseY >= cy && this.mouseY <= cy + ch;
+
+      // Card background
+      ctx.fillStyle = hov ? 'rgba(0,100,140,0.25)' : 'rgba(10,18,32,0.85)';
+      roundRect(ctx, cx, cy, cw, ch, 8);
+      ctx.fill();
+      ctx.strokeStyle = done ? '#00C8A0' : hov ? THEME.accent : THEME.panelBorder;
+      ctx.lineWidth   = done ? 1.5 : 1;
+      roundRect(ctx, cx, cy, cw, ch, 8);
+      ctx.stroke();
+
+      // Icon
+      ctx.font      = '28px serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(sc.icon, cx + 14, cy + 44);
+
+      // Title
+      ctx.fillStyle = hov ? THEME.accent : THEME.text;
+      ctx.font      = 'bold 14px Courier New';
+      ctx.textAlign = 'left';
+      ctx.fillText(sc.title, cx + 54, cy + 34);
+
+      // Subtitle
+      ctx.fillStyle = THEME.textDim;
+      ctx.font      = '11px Courier New';
+      ctx.fillText(sc.subtitle, cx + 54, cy + 52);
+
+      // Step count
+      ctx.fillStyle = THEME.textDim;
+      ctx.font      = '10px Courier New';
+      ctx.fillText(`${sc.steps.length} steps`, cx + 54, cy + 68);
+
+      // Completion badge
+      if (done) {
+        ctx.fillStyle = '#00C8A0';
+        ctx.font      = 'bold 11px Courier New';
+        ctx.textAlign = 'right';
+        ctx.fillText('✔ COMPLETE', cx + cw - 10, cy + 26);
+      }
+
+      // START button
+      const bw2 = 80, bh2 = 28;
+      const btnX = cx + cw - bw2 - 10, btnY = cy + ch - bh2 - 10;
+      const btnHov = hov && this.mouseX >= btnX && this.mouseX <= btnX + bw2
+                        && this.mouseY >= btnY && this.mouseY <= btnY + bh2;
+      ctx.fillStyle = btnHov ? 'rgba(0,180,220,0.35)' : 'rgba(0,120,160,0.20)';
+      roundRect(ctx, btnX, btnY, bw2, bh2, 5);
+      ctx.fill();
+      ctx.strokeStyle = btnHov ? THEME.accent : THEME.accentDim;
+      ctx.lineWidth   = 1;
+      roundRect(ctx, btnX, btnY, bw2, bh2, 5);
+      ctx.stroke();
+      ctx.fillStyle   = btnHov ? THEME.accent : THEME.text;
+      ctx.font        = 'bold 11px Courier New';
+      ctx.textAlign   = 'center';
+      ctx.fillText(done ? '▶ REPLAY' : '▶ START', btnX + bw2 / 2, btnY + bh2 / 2 + 4);
+    });
+
+    // Back button
+    const bk: Button = { x: W / 2 - 90, y: H - 54, w: 180, h: 36, label: '← BACK', action: onBack };
+    drawButton(ctx, bk, isHit(bk, this.mouseX, this.mouseY));
+  }
+
+  handleTutorialSelectClick(
+    mx: number, my: number,
+    scenarios: TutorialScenario[],
+    onSelect: (idx: number) => void,
+    onBack:   () => void,
+  ): boolean {
+    const { W, H } = this;
+    const COLS   = 2;
+    const cw     = Math.min(520, (W - 60) / COLS);
+    const ch     = 108;
+    const gap    = 14;
+    const startX = (W - COLS * cw - (COLS - 1) * gap) / 2;
+    const startY = 104;
+
+    for (let i = 0; i < scenarios.length; i++) {
+      const col  = i % COLS;
+      const row  = Math.floor(i / COLS);
+      const cx   = startX + col * (cw + gap);
+      const cy   = startY + row * (ch + gap);
+      if (mx >= cx && mx <= cx + cw && my >= cy && my <= cy + ch) {
+        onSelect(i);
+        return true;
+      }
+    }
+
+    const bk: Button = { x: W / 2 - 90, y: H - 54, w: 180, h: 36, label: '', action: onBack };
+    if (isHit(bk, mx, my)) { onBack(); return true; }
+    return false;
+  }
+
+  // ─── Tutorial Overlay (drawn on top of any game screen) ──────────────────
+
+  renderTutorialOverlay(tm: TutorialManager): void {
+    if (!tm.isActive) return;
+
+    const ctx = this.ctx;
+    const { W, H } = this;
+
+    // ── Step-complete flash banner ────────────────────────────────────────
+    if (tm.flashTimer > 0) {
+      const alpha = Math.min(1, tm.flashTimer / 0.4);
+      ctx.fillStyle = `rgba(0,160,100,${alpha * 0.88})`;
+      ctx.fillRect(0, 0, W, 50);
+      ctx.fillStyle = `rgba(0,255,160,${alpha})`;
+      ctx.font      = 'bold 16px Courier New';
+      ctx.textAlign = 'center';
+      ctx.fillText(`✓  ${tm.flashTitle}`, W / 2, 30);
+
+      if (tm.scenarioDone) {
+        ctx.fillStyle = `rgba(0,255,160,${alpha * 0.7})`;
+        ctx.font      = '12px Courier New';
+        ctx.fillText('Scenario Complete!  Click anywhere to continue.', W / 2, 46);
+      }
+      return;
+    }
+
+    if (tm.scenarioDone) return;
+
+    const sc   = tm.scenario;
+    const step = tm.step;
+    if (!sc || !step) return;
+
+    // ── Step panel (bottom-left) ──────────────────────────────────────────
+    const PW   = Math.min(400, W * 0.42);
+    const px   = 12;
+    const lineH = 16;
+
+    // Measure body lines
+    const bodyLines = this._wrapText(step.body, PW - 28, '12px Courier New');
+    const hintLines = step.hint ? this._wrapText(step.hint, PW - 28, '11px Courier New') : [];
+    const contentH  = 26 + bodyLines.length * lineH + (hintLines.length > 0 ? 8 + hintLines.length * 14 : 0) + 22;
+    const PH        = Math.max(100, contentH + 24);
+    const py        = H - PH - 12;
+
+    ctx.fillStyle = 'rgba(4,10,22,0.90)';
+    roundRect(ctx, px, py, PW, PH, 8);
+    ctx.fill();
+    ctx.strokeStyle = THEME.panelBorder;
+    ctx.lineWidth   = 1;
+    roundRect(ctx, px, py, PW, PH, 8);
+    ctx.stroke();
+
+    // Step badge
+    const total      = sc.steps.length;
+    const stepLabel  = `Step ${tm.stepIdx + 1} / ${total}`;
+    ctx.fillStyle    = THEME.accentDim;
+    ctx.font         = '10px Courier New';
+    ctx.textAlign    = 'right';
+    ctx.fillText(stepLabel, px + PW - 10, py + 14);
+
+    // Scenario name
+    ctx.fillStyle = THEME.textDim;
+    ctx.font      = '10px Courier New';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${sc.icon}  ${sc.title}`, px + 10, py + 14);
+
+    // Progress bar
+    const barW  = PW - 20;
+    const barH  = 2;
+    const barX  = px + 10, barY = py + 20;
+    ctx.fillStyle = 'rgba(0,80,120,0.5)';
+    ctx.fillRect(barX, barY, barW, barH);
+    ctx.fillStyle = THEME.accent;
+    ctx.fillRect(barX, barY, barW * (tm.stepIdx / total), barH);
+
+    // Title
+    ctx.fillStyle = THEME.accent;
+    ctx.font      = 'bold 13px Courier New';
+    ctx.textAlign = 'left';
+    ctx.fillText(step.title, px + 10, py + 38);
+
+    // Body text
+    ctx.fillStyle = THEME.text;
+    ctx.font      = '12px Courier New';
+    let textY     = py + 56;
+    for (const line of bodyLines) {
+      ctx.fillText(line, px + 10, textY);
+      textY += lineH;
+    }
+
+    // Hint
+    if (hintLines.length > 0) {
+      textY += 6;
+      ctx.fillStyle = THEME.textDim;
+      ctx.font      = '11px Courier New';
+      for (const line of hintLines) {
+        ctx.fillText(`ℹ  ${line}`, px + 10, textY);
+        textY += 14;
+      }
+    }
+
+    // Skip button (top-right corner of panel)
+    ctx.fillStyle = 'rgba(100,140,180,0.4)';
+    ctx.font      = '10px Courier New';
+    ctx.textAlign = 'right';
+    ctx.fillText('[ Skip tutorial ]', px + PW - 10, py + PH - 8);
+  }
+
+  /** Returns true if the "skip tutorial" link was clicked. */
+  handleTutorialOverlayClick(mx: number, my: number, tm: TutorialManager): boolean {
+    if (!tm.isActive) return false;
+
+    const { W, H } = this;
+
+    // While flash is showing: any click dismisses if scenario is done
+    if (tm.flashTimer > 0 && tm.scenarioDone) {
+      return true;  // caller will handle
+    }
+
+    const sc   = tm.scenario;
+    const step = tm.step;
+    if (!sc || !step) return false;
+
+    const PW = Math.min(400, W * 0.42);
+    const px = 12;
+    const lineH  = 16;
+    const bodyLines = this._wrapText(step.body, PW - 28, '12px Courier New');
+    const hintLines = step.hint ? this._wrapText(step.hint, PW - 28, '11px Courier New') : [];
+    const contentH  = 26 + bodyLines.length * lineH + (hintLines.length > 0 ? 8 + hintLines.length * 14 : 0) + 22;
+    const PH        = Math.max(100, contentH + 24);
+    const py        = H - PH - 12;
+
+    // Skip link hit area (bottom-right of panel)
+    const skipX = px + PW - 120, skipY = py + PH - 20;
+    if (mx >= skipX && mx <= px + PW && my >= skipY && my <= py + PH) {
+      return true;   // caller stops tutorial
+    }
+    return false;
+  }
+
   // ─── Private Helpers ──────────────────────────────────────────────────────
+
+  /** Word-wrap `text` (with \n line breaks) into lines fitting `maxWidth`. */
+  private _wrapText(text: string, maxWidth: number, font: string): string[] {
+    const ctx   = this.ctx;
+    const saved = ctx.font;
+    ctx.font    = font;
+    const lines: string[] = [];
+    for (const para of text.split('\n')) {
+      const words   = para.split(' ');
+      let current   = '';
+      for (const word of words) {
+        const test = current ? `${current} ${word}` : word;
+        if (ctx.measureText(test).width > maxWidth && current) {
+          lines.push(current);
+          current = word;
+        } else {
+          current = test;
+        }
+      }
+      if (current) lines.push(current);
+    }
+    ctx.font = saved;
+    return lines;
+  }
 
   private _drawMenuStars(time: number): void {
     const ctx  = this.ctx;
